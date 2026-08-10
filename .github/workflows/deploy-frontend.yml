@@ -1,0 +1,44 @@
+name: Deploy Frontend to GitHub Pages
+
+on:
+  push:
+    branches: [ "main" ]  # Triggers when you push to the main branch
+  workflow_dispatch:      # Allows you to run it manually from GitHub
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build the React app
+        run: npm run build
+        env:
+          # Pass your Firebase config as env vars so React can use them
+          REACT_APP_FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          REACT_APP_FIREBASE_AUTH_DOMAIN: ${{ secrets.FIREBASE_AUTH_DOMAIN }}
+          REACT_APP_FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          # Add other Firebase configs as needed
+
+      - name: Upload build artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './build'  # Vite uses 'dist', Create React App uses 'build'
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

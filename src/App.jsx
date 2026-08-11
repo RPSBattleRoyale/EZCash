@@ -49,24 +49,30 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Listen to auth state
+  // Listen to auth state (FIXED: no forced redirect loop)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
         const adminEmail = 'flynzb9957@zohomail.com';
-        setIsAdmin(currentUser.email === adminEmail);
-        if (currentUser.email === adminEmail) {
-          setCurrentPage('admin');
+        const isAdminUser = currentUser.email === adminEmail;
+        setIsAdmin(isAdminUser);
+        
+        // Only redirect if they were on home or login page (first login)
+        if (currentPage === 'home' || currentPage === 'login') {
+          setCurrentPage('dashboard');
         }
       } else {
         setIsAdmin(false);
-        if (currentPage === 'admin') setCurrentPage('home');
+        // Only redirect to home if they weren't already there
+        if (currentPage !== 'home' && currentPage !== 'login') {
+          setCurrentPage('home');
+        }
       }
       setLoadingAuth(false);
     });
     return () => unsubscribe();
-  }, [currentPage]);
+  }, []); // 👈 EMPTY dependency array – runs only once on mount
 
   // Fetch pending withdrawals when admin panel loads
   useEffect(() => {
@@ -139,7 +145,6 @@ function App() {
       setMessage('✅ Login successful!');
       setLoginEmail('');
       setLoginPassword('');
-      // The onAuthStateChanged will automatically update the user state and redirect.
     } catch (error) {
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
         setMessage('❌ Invalid email or password.');
@@ -257,7 +262,7 @@ function App() {
       <p className="subtitle">Complete offers below to earn cash!</p>
 
       <div className="dashboard-card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
           <div>
             <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your Balance</div>
             <div style={{ fontSize: '32px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
@@ -270,11 +275,6 @@ function App() {
         <div style={{ marginTop: '10px' }}>
           <div style={{ color: '#a0aec0', marginBottom: '10px', fontWeight: '600' }}>📱 Offerwall</div>
           <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>
-            {/* 
-              REPLACE THIS IFRAME SRC WITH YOUR OFFERWALL LINK.
-              Most offerwalls let you pass the user ID via a URL param like &subid=USER_UID
-              Example: https://your-offerwall.com/offers?subid={user?.uid}
-            */}
             <iframe
               src="https://www.offerwalls.com/placeholder"
               style={{ width: '100%', height: '100%', border: 'none' }}
@@ -303,7 +303,7 @@ function App() {
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', minWidth: '500px' }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid #2a2f4f', textAlign: 'left' }}>
                   <th style={{ padding: '10px' }}>User ID</th>
@@ -316,7 +316,7 @@ function App() {
               <tbody>
                 {pendingWithdrawals.map((w) => (
                   <tr key={w.id} style={{ borderBottom: '1px solid #1a1f3a' }}>
-                    <td style={{ padding: '10px', color: '#a0aec0' }}>{w.userId}</td>
+                    <td style={{ padding: '10px', color: '#a0aec0', wordBreak: 'break-all' }}>{w.userId}</td>
                     <td style={{ padding: '10px', fontWeight: '600', color: '#00f5a0' }}>${w.amount}</td>
                     <td style={{ padding: '10px' }}>{w.paypalEmail}</td>
                     <td style={{ padding: '10px', color: '#4a4f6f' }}>
@@ -369,11 +369,15 @@ function App() {
           background: #0a0b1e;
           color: #fff;
           min-height: 100vh;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          display: block; /* FIXED: allows scrolling */
         }
-        .app { width: 100%; max-width: 1200px; padding: 20px 30px; margin: 0 auto; }
+        .app {
+          width: 100%;
+          max-width: 1200px;
+          padding: 20px 30px;
+          margin: 0 auto;
+          min-height: 100vh;
+        }
         .navbar {
           display: flex;
           justify-content: space-between;
@@ -384,7 +388,7 @@ function App() {
           flex-wrap: wrap;
           gap: 10px;
         }
-        .navbar-left { display: flex; align-items: center; gap: 30px; }
+        .navbar-left { display: flex; align-items: center; gap: 30px; flex-wrap: wrap; }
         .logo {
           font-size: 28px;
           font-weight: 800;
@@ -398,6 +402,7 @@ function App() {
           gap: 20px;
           font-weight: 500;
           color: #a0aec0;
+          flex-wrap: wrap;
         }
         .nav-links span {
           cursor: pointer;
@@ -407,7 +412,7 @@ function App() {
         }
         .nav-links span:hover { color: #fff; background: #1a1f3a; }
         .nav-links .active { color: #00f5a0; background: #1a2a2a; }
-        .navbar-right { display: flex; align-items: center; gap: 15px; }
+        .navbar-right { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
         .btn-logout {
           padding: 8px 16px;
           border: 1px solid #2a2f4f;
@@ -520,6 +525,7 @@ function App() {
           gap: 12px;
           font-size: 15px;
           color: #a0aec0;
+          flex-wrap: wrap;
         }
         .social-proof .counter { font-weight: 700; font-size: 18px; color: #00f5a0; }
         @media (max-width: 640px) {
@@ -527,7 +533,7 @@ function App() {
           .signup-card, .dashboard-card, .admin-card { padding: 20px; max-width: 100%; }
           .navbar { flex-direction: column; align-items: stretch; }
           .navbar-left { flex-direction: column; align-items: stretch; gap: 10px; }
-          .nav-links { justify-content: center; flex-wrap: wrap; }
+          .nav-links { justify-content: center; }
           .navbar-right { justify-content: center; }
         }
         table { font-size: 12px; }

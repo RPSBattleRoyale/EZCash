@@ -1,19 +1,38 @@
 import { useState, useEffect } from 'react';
-import { createUserWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth';
-import { auth } from './firebase';
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signOut,
+  signInWithEmailAndPassword,
+  onAuthStateChanged,
+} from 'firebase/auth';
+import { auth, db } from './firebase';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 
 function App() {
   // ===== STATE =====
   const [currentPage, setCurrentPage] = useState('home');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
+  // Auth state
+  const [user, setUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+
+  // Admin data
+  const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
+  const [loadingWithdrawals, setLoadingWithdrawals] = useState(false);
+
   // Animated counter
   const [count, setCount] = useState(0);
-  const targetCount = 0;
+  const targetCount = 100018;
 
+  // ===== EFFECTS =====
   useEffect(() => {
     let start = 0;
     const duration = 2000;
@@ -30,43 +49,63 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // ===== FIREBASE SIGN-UP =====
+  // Listen to auth state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        const adminEmail = 'flynzb9957@zohomail.com';
+        setIsAdmin(currentUser.email === adminEmail);
+        if (currentUser.email === adminEmail) {
+          setCurrentPage('admin');
+        }
+      } else {
+        setIsAdmin(false);
+        if (currentPage === 'admin') setCurrentPage('home');
+      }
+      setLoadingAuth(false);
+    });
+    return () => unsubscribe();
+  }, [currentPage]);
+
+  // Fetch pending withdrawals when admin panel loads
+  useEffect(() => {
+    if (isAdmin && currentPage === 'admin') {
+      fetchPendingWithdrawals();
+    }
+  }, [isAdmin, currentPage]);
+
+  // ===== FUNCTIONS =====
+  const fetchPendingWithdrawals = async () => {
+    setLoadingWithdrawals(true);
+    try {
+      const q = query(collection(db, 'withdrawals'), where('status', '==', 'pending'));
+      const querySnapshot = await getDocs(q);
+      const data = [];
+      querySnapshot.forEach((doc) => {
+        data.push({ id: doc.id, ...doc.data() });
+      });
+      setPendingWithdrawals(data);
+    } catch (error) {
+      console.error('Error fetching withdrawals:', error);
+    } finally {
+      setLoadingWithdrawals(false);
+    }
+  };
+
+  // ===== SIGN UP =====
   const handleSignUp = async () => {
-    // Reset message
     setMessage('');
-
-    // Validate email
-    if (!email) {
-      setMessage('⚠️ Please enter your email address.');
-      return;
-    }
-    if (!email.includes('@')) {
-      setMessage('⚠️ Please enter a valid email address.');
-      return;
-    }
-
-    // Validate password
-    if (!password) {
-      setMessage('⚠️ Please enter a password.');
-      return;
-    }
-    if (password.length < 6) {
-      setMessage('⚠️ Password must be at least 6 characters.');
-      return;
-    }
+    if (!email) { setMessage('⚠️ Please enter your email address.'); return; }
+    if (!email.includes('@')) { setMessage('⚠️ Please enter a valid email address.'); return; }
+    if (!password) { setMessage('⚠️ Please enter a password.'); return; }
+    if (password.length < 6) { setMessage('⚠️ Password must be at least 6 characters.'); return; }
 
     setIsLoading(true);
-
     try {
-      // 1. Create the user
       const userCred = await createUserWithEmailAndPassword(auth, email, password);
-      
-      // 2. Send verification email
       await sendEmailVerification(userCred.user);
-      
-      // 3. Sign them out (so they must verify before logging in again)
       await signOut(auth);
-
       setMessage('✅ Verification email sent! Please check your inbox and click the link to verify your email. You can withdraw only after verifying.');
       setEmail('');
       setPassword('');
@@ -81,13 +120,48 @@ function App() {
     }
   };
 
-  const handleGoogleSignUp = () => {
-    setMessage('🔐 Google sign-up coming soon!');
+  // ===== LOGIN =====
+  const handleLogin = async () => {
+    setMessage('');
+    if (!loginEmail || !loginPassword) {
+      setMessage('⚠️ Please enter both email and password.');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const userCred = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      const loggedInUser = userCred.user;
+      if (!loggedInUser.emailVerified) {
+        setMessage('❌ Please verify your email before logging in. Check your inbox.');
+        await signOut(auth);
+        return;
+      }
+      setMessage('✅ Login successful!');
+      setLoginEmail('');
+      setLoginPassword('');
+      // The onAuthStateChanged will automatically update the user state and redirect.
+    } catch (error) {
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+        setMessage('❌ Invalid email or password.');
+      } else {
+        setMessage(`❌ ${error.message}`);
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleFacebookSignUp = () => {
-    setMessage('🔐 Facebook sign-up coming soon!');
+  // ===== LOGOUT =====
+  const handleLogout = async () => {
+    await signOut(auth);
+    setUser(null);
+    setCurrentPage('home');
+    setMessage('');
   };
+
+  // ===== SOCIAL PLACEHOLDERS =====
+  const handleGoogleSignUp = () => setMessage('🔐 Google sign-up coming soon!');
+  const handleFacebookSignUp = () => setMessage('🔐 Facebook sign-up coming soon!');
 
   // ===== PAGE COMPONENTS =====
   const renderHome = () => (
@@ -139,33 +213,153 @@ function App() {
     </div>
   );
 
-  const renderCashout = () => (
-    <div className="hero" style={{ paddingTop: '20px' }}>
-      <h1 style={{ fontSize: '38px' }}>💰 Cash Out Your Earnings</h1>
-      <p className="subtitle">Minimum withdrawal: $5 for first time, $1 afterwards.</p>
+  const renderLogin = () => (
+    <div className="hero">
+      <h1 style={{ fontSize: '42px' }}>Welcome Back</h1>
+      <p className="subtitle">Log in to your EZCash account</p>
 
-      <div className="signup-card" style={{ maxWidth: '400px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-          <div style={{ fontSize: '40px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
-          <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your current balance</div>
-        </div>
-
+      <div className="signup-card">
         <div className="input-group">
-          <input type="number" placeholder="Amount to withdraw (min $5)" />
-          <input type="email" placeholder="PayPal email address" />
-          <button className="btn-primary" onClick={() => alert('🚀 Withdrawal request sent! (This will be processed in 24-48 hours)')}>
-            Request Withdrawal
+          <input
+            type="email"
+            placeholder="Email address"
+            value={loginEmail}
+            onChange={(e) => setLoginEmail(e.target.value)}
+            disabled={isLoading}
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={loginPassword}
+            onChange={(e) => setLoginPassword(e.target.value)}
+            disabled={isLoading}
+            onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+          />
+          <button className="btn-primary" onClick={handleLogin} disabled={isLoading}>
+            {isLoading ? 'Logging in...' : 'Log In →'}
           </button>
         </div>
-
-        <div style={{ marginTop: '15px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
-          ⚡ Withdrawals are sent to your PayPal account within 24-48 hours.
+        {message && (
+          <div style={{ marginTop: '12px', padding: '10px', borderRadius: '8px', background: '#1a1f3a', color: '#a0aec0', fontSize: '14px', textAlign: 'center' }}>
+            {message}
+          </div>
+        )}
+        <div style={{ marginTop: '15px', color: '#4a4f6f', fontSize: '14px' }}>
+          Don't have an account? <span style={{ color: '#00f5a0', cursor: 'pointer' }} onClick={() => setCurrentPage('home')}>Sign up here</span>
         </div>
       </div>
     </div>
   );
 
-  // ===== NAVBAR + RENDER =====
+  const renderDashboard = () => (
+    <div className="hero">
+      <h1 style={{ fontSize: '38px' }}>👋 Welcome, {user?.email}</h1>
+      <p className="subtitle">Complete offers below to earn cash!</p>
+
+      <div className="dashboard-card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px' }}>
+          <div>
+            <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your Balance</div>
+            <div style={{ fontSize: '32px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
+          </div>
+          <div style={{ fontSize: '13px', color: '#4a4f6f' }}>
+            {user?.emailVerified ? '✅ Verified' : '⚠️ Verify your email to withdraw'}
+          </div>
+        </div>
+
+        <div style={{ marginTop: '10px' }}>
+          <div style={{ color: '#a0aec0', marginBottom: '10px', fontWeight: '600' }}>📱 Offerwall</div>
+          <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>
+            {/* 
+              REPLACE THIS IFRAME SRC WITH YOUR OFFERWALL LINK.
+              Most offerwalls let you pass the user ID via a URL param like &subid=USER_UID
+              Example: https://your-offerwall.com/offers?subid={user?.uid}
+            */}
+            <iframe
+              src="https://www.offerwalls.com/placeholder"
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              title="Offerwall"
+            />
+          </div>
+          <div style={{ marginTop: '10px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
+            💡 Complete offers, surveys, and app downloads to earn real cash. Your balance updates automatically.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderAdminPanel = () => (
+    <div className="hero">
+      <h1 style={{ fontSize: '38px' }}>🛡️ Admin Panel</h1>
+      <p className="subtitle">Manage pending withdrawal requests</p>
+
+      <div className="admin-card">
+        {loadingWithdrawals ? (
+          <div style={{ textAlign: 'center', padding: '40px', color: '#4a4f6f' }}>Loading withdrawals...</div>
+        ) : pendingWithdrawals.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px', color: '#4a4f6f' }}>
+            ✅ No pending withdrawals. All caught up!
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #2a2f4f', textAlign: 'left' }}>
+                  <th style={{ padding: '10px' }}>User ID</th>
+                  <th style={{ padding: '10px' }}>Amount</th>
+                  <th style={{ padding: '10px' }}>PayPal Email</th>
+                  <th style={{ padding: '10px' }}>Requested At</th>
+                  <th style={{ padding: '10px' }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingWithdrawals.map((w) => (
+                  <tr key={w.id} style={{ borderBottom: '1px solid #1a1f3a' }}>
+                    <td style={{ padding: '10px', color: '#a0aec0' }}>{w.userId}</td>
+                    <td style={{ padding: '10px', fontWeight: '600', color: '#00f5a0' }}>${w.amount}</td>
+                    <td style={{ padding: '10px' }}>{w.paypalEmail}</td>
+                    <td style={{ padding: '10px', color: '#4a4f6f' }}>
+                      {w.requestedAt ? new Date(w.requestedAt.seconds * 1000).toLocaleString() : 'N/A'}
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      <button
+                        onClick={() => alert(`TODO: Mark ${w.id} as paid.`)}
+                        style={{
+                          background: '#00f5a0',
+                          color: '#0a0b1e',
+                          border: 'none',
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Mark Paid
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ marginTop: '15px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
+          Total pending: <strong style={{ color: '#fff' }}>{pendingWithdrawals.length}</strong>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ===== MAIN RENDER =====
+  if (loadingAuth) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0b1e', color: '#fff' }}>
+        Loading...
+      </div>
+    );
+  }
+
   return (
     <>
       <style>{`
@@ -179,12 +373,7 @@ function App() {
           align-items: center;
           justify-content: center;
         }
-        .app {
-          width: 100%;
-          max-width: 1200px;
-          padding: 20px 30px;
-          margin: 0 auto;
-        }
+        .app { width: 100%; max-width: 1200px; padding: 20px 30px; margin: 0 auto; }
         .navbar {
           display: flex;
           justify-content: space-between;
@@ -192,7 +381,10 @@ function App() {
           padding: 10px 0 30px 0;
           border-bottom: 1px solid #1a1f3a;
           margin-bottom: 20px;
+          flex-wrap: wrap;
+          gap: 10px;
         }
+        .navbar-left { display: flex; align-items: center; gap: 30px; }
         .logo {
           font-size: 28px;
           font-weight: 800;
@@ -203,7 +395,7 @@ function App() {
         }
         .nav-links {
           display: flex;
-          gap: 30px;
+          gap: 20px;
           font-weight: 500;
           color: #a0aec0;
         }
@@ -214,16 +406,25 @@ function App() {
           border-radius: 8px;
         }
         .nav-links span:hover { color: #fff; background: #1a1f3a; }
-        .nav-links .active {
-          color: #00f5a0;
-          background: #1a2a2a;
+        .nav-links .active { color: #00f5a0; background: #1a2a2a; }
+        .navbar-right { display: flex; align-items: center; gap: 15px; }
+        .btn-logout {
+          padding: 8px 16px;
+          border: 1px solid #2a2f4f;
+          background: transparent;
+          color: #a0aec0;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all 0.2s;
         }
+        .btn-logout:hover { background: #1a1f3a; color: #fff; border-color: #ff6b6b; }
+        .user-email { font-size: 14px; color: #4a4f6f; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .hero {
           display: flex;
           flex-direction: column;
           align-items: center;
           text-align: center;
-          padding: 40px 0 20px 0;
+          padding: 20px 0;
         }
         .hero h1 {
           font-size: 52px;
@@ -240,7 +441,7 @@ function App() {
           color: #94a3b8;
           margin-bottom: 40px;
         }
-        .signup-card {
+        .signup-card, .dashboard-card, .admin-card {
           background: #13162e;
           border: 1px solid #2a2f4f;
           border-radius: 20px;
@@ -249,11 +450,11 @@ function App() {
           max-width: 480px;
           box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
         }
+        .dashboard-card, .admin-card { max-width: 900px; }
         .signup-card .input-group {
           display: flex;
           flex-direction: column;
           gap: 12px;
-          margin-bottom: 0px;
         }
         .signup-card input {
           padding: 16px 20px;
@@ -320,41 +521,78 @@ function App() {
           font-size: 15px;
           color: #a0aec0;
         }
-        .social-proof .counter {
-          font-weight: 700;
-          font-size: 18px;
-          color: #00f5a0;
-        }
+        .social-proof .counter { font-weight: 700; font-size: 18px; color: #00f5a0; }
         @media (max-width: 640px) {
           .hero h1 { font-size: 32px; }
-          .signup-card { padding: 30px 20px; }
-          .navbar { flex-direction: column; gap: 10px; }
-          .nav-links { gap: 20px; font-size: 14px; }
+          .signup-card, .dashboard-card, .admin-card { padding: 20px; max-width: 100%; }
+          .navbar { flex-direction: column; align-items: stretch; }
+          .navbar-left { flex-direction: column; align-items: stretch; gap: 10px; }
+          .nav-links { justify-content: center; flex-wrap: wrap; }
+          .navbar-right { justify-content: center; }
         }
+        table { font-size: 12px; }
+        th { color: #a0aec0; font-weight: 600; }
+        td { word-break: break-all; }
       `}</style>
 
       <div className="app">
-        {/* ===== NAVBAR ===== */}
         <nav className="navbar">
-          <div className="logo" onClick={() => setCurrentPage('home')}>💰 EZCash</div>
-          <div className="nav-links">
-            <span
-              className={currentPage === 'home' ? 'active' : ''}
-              onClick={() => setCurrentPage('home')}
-            >
-              Home
-            </span>
-            <span
-              className={currentPage === 'cashout' ? 'active' : ''}
-              onClick={() => setCurrentPage('cashout')}
-            >
-              Cashout
-            </span>
+          <div className="navbar-left">
+            <div className="logo" onClick={() => setCurrentPage('home')}>💰 EZCash</div>
+            <div className="nav-links">
+              {!user ? (
+                <>
+                  <span className={currentPage === 'home' ? 'active' : ''} onClick={() => setCurrentPage('home')}>Sign Up</span>
+                  <span className={currentPage === 'login' ? 'active' : ''} onClick={() => setCurrentPage('login')}>Login</span>
+                </>
+              ) : (
+                <>
+                  <span className={currentPage === 'dashboard' ? 'active' : ''} onClick={() => setCurrentPage('dashboard')}>Dashboard</span>
+                  <span className={currentPage === 'cashout' ? 'active' : ''} onClick={() => setCurrentPage('cashout')}>Cashout</span>
+                  {isAdmin && (
+                    <span className={currentPage === 'admin' ? 'active' : ''} onClick={() => setCurrentPage('admin')}>Admin</span>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+          <div className="navbar-right">
+            {user && <span className="user-email">{user.email}</span>}
+            {user && (
+              <button className="btn-logout" onClick={handleLogout}>
+                Logout
+              </button>
+            )}
           </div>
         </nav>
 
         {/* ===== PAGE RENDERER ===== */}
-        {currentPage === 'home' ? renderHome() : renderCashout()}
+        {!user && currentPage === 'login' && renderLogin()}
+        {!user && currentPage === 'home' && renderHome()}
+        {user && currentPage === 'dashboard' && renderDashboard()}
+        {user && currentPage === 'cashout' && (
+          <div className="hero">
+            <h1 style={{ fontSize: '38px' }}>💰 Cash Out Your Earnings</h1>
+            <p className="subtitle">Minimum withdrawal: $5 for first time, $1 afterwards.</p>
+            <div className="signup-card" style={{ maxWidth: '400px' }}>
+              <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+                <div style={{ fontSize: '40px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
+                <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your current balance</div>
+              </div>
+              <div className="input-group">
+                <input type="number" placeholder="Amount to withdraw (min $5)" />
+                <input type="email" placeholder="PayPal email address" />
+                <button className="btn-primary" onClick={() => alert('🚀 Withdrawal request sent!')}>
+                  Request Withdrawal
+                </button>
+              </div>
+              <div style={{ marginTop: '15px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
+                ⚡ Withdrawals are sent to your PayPal account within 24-48 hours.
+              </div>
+            </div>
+          </div>
+        )}
+        {user && isAdmin && currentPage === 'admin' && renderAdminPanel()}
       </div>
     </>
   );

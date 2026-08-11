@@ -1,18 +1,22 @@
 import { useState, useEffect } from 'react';
+import { createUserWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth';
+import { auth } from './firebase';
 
 function App() {
   // ===== STATE =====
   const [currentPage, setCurrentPage] = useState('home');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   // Animated counter
   const [count, setCount] = useState(0);
-  const targetCount = 100000;
+  const targetCount = 0;
 
   useEffect(() => {
     let start = 0;
-    const duration = 10000000;
+    const duration = 2000;
     const increment = targetCount / (duration / 16);
     const timer = setInterval(() => {
       start += increment;
@@ -26,8 +30,12 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // ===== HANDLERS =====
-  const handleSignUp = () => {
+  // ===== FIREBASE SIGN-UP =====
+  const handleSignUp = async () => {
+    // Reset message
+    setMessage('');
+
+    // Validate email
     if (!email) {
       setMessage('⚠️ Please enter your email address.');
       return;
@@ -36,19 +44,49 @@ function App() {
       setMessage('⚠️ Please enter a valid email address.');
       return;
     }
-    setMessage(`✅ Check your email (${email}) to verify your account!`);
-    console.log('Sign-up attempted with:', email);
-    // In the next step, we'll connect this to Firebase Auth
+
+    // Validate password
+    if (!password) {
+      setMessage('⚠️ Please enter a password.');
+      return;
+    }
+    if (password.length < 6) {
+      setMessage('⚠️ Password must be at least 6 characters.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      // 1. Create the user
+      const userCred = await createUserWithEmailAndPassword(auth, email, password);
+      
+      // 2. Send verification email
+      await sendEmailVerification(userCred.user);
+      
+      // 3. Sign them out (so they must verify before logging in again)
+      await signOut(auth);
+
+      setMessage('✅ Verification email sent! Please check your inbox and click the link to verify your email. You can withdraw only after verifying.');
+      setEmail('');
+      setPassword('');
+    } catch (error) {
+      if (error.code === 'auth/email-already-in-use') {
+        setMessage('❌ This email is already registered. Please log in instead.');
+      } else {
+        setMessage(`❌ ${error.message}`);
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGoogleSignUp = () => {
     setMessage('🔐 Google sign-up coming soon!');
-    console.log('Google sign-up clicked');
   };
 
   const handleFacebookSignUp = () => {
     setMessage('🔐 Facebook sign-up coming soon!');
-    console.log('Facebook sign-up clicked');
   };
 
   // ===== PAGE COMPONENTS =====
@@ -64,9 +102,18 @@ function App() {
             placeholder="Email address"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            disabled={isLoading}
           />
-          <button className="btn-primary" onClick={handleSignUp}>
-            Start earning now →
+          <input
+            type="password"
+            placeholder="Create a password (min 6 chars)"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={isLoading}
+            onKeyDown={(e) => e.key === 'Enter' && handleSignUp()}
+          />
+          <button className="btn-primary" onClick={handleSignUp} disabled={isLoading}>
+            {isLoading ? 'Creating account...' : 'Start earning now →'}
           </button>
         </div>
         {message && (
@@ -118,7 +165,7 @@ function App() {
     </div>
   );
 
-  // ===== NAVBAR + RENDER ENGINE =====
+  // ===== NAVBAR + RENDER =====
   return (
     <>
       <style>{`
@@ -230,7 +277,8 @@ function App() {
           cursor: pointer;
           transition: transform 0.15s, box-shadow 0.2s;
         }
-        .btn-primary:hover { transform: scale(1.02); box-shadow: 0 8px 25px rgba(0, 245, 160, 0.2); }
+        .btn-primary:hover:not(:disabled) { transform: scale(1.02); box-shadow: 0 8px 25px rgba(0, 245, 160, 0.2); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
         .divider {
           display: flex;
           align-items: center;
@@ -277,12 +325,6 @@ function App() {
           font-size: 18px;
           color: #00f5a0;
         }
-        .cashout-inputs {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          margin-bottom: 20px;
-        }
         @media (max-width: 640px) {
           .hero h1 { font-size: 32px; }
           .signup-card { padding: 30px 20px; }
@@ -294,7 +336,7 @@ function App() {
       <div className="app">
         {/* ===== NAVBAR ===== */}
         <nav className="navbar">
-          <div className="logo" onClick={() => setCurrentPage('home')}>💰 FREECASH</div>
+          <div className="logo" onClick={() => setCurrentPage('home')}>💰 EZCash</div>
           <div className="nav-links">
             <span
               className={currentPage === 'home' ? 'active' : ''}

@@ -8,6 +8,7 @@ import {
 } from 'firebase/auth';
 import { auth, db } from './firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
+import { Analytics } from '@vercel/analytics/react';
 
 function App() {
   // ===== STATE =====
@@ -600,6 +601,7 @@ function App() {
         )}
         {user && isAdmin && currentPage === 'admin' && renderAdminPanel()}
       </div>
+      <Analytics />
     </>
   );
 }

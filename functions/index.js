@@ -10,39 +10,54 @@ const db = admin.firestore();
 // OFFERWALL WEBHOOK (Updated to handle multiple providers)
 // ========================
 exports.offerwallWebhook = functions.https.onRequest(async (req, res) => {
-  // 🔒 Protect against fake requests
-  const secret = functions.config().offerwall?.secret;
-  if (req.headers['x-api-key'] !== secret) {
-    // Also check for Offermaru's format
-    if (req.headers['authorization'] !== `Bearer ${functions.config().offermaru?.api_key}`) {
-      return res.status(403).send('Invalid API key');
-    }
+  console.log('Webhook received:', {
+    method: req.method,
+    query: req.query,
+    headers: req.headers,
+    body: req.body,
+  });
+
+  // --- SECURITY CHECKS ---
+
+  // 1. Revtoo secret (sent as x-api-key header)
+  const revtooSecret = functions.config().offerwall?.secret;
+
+  // 2. Offermaru S2S secret (sent as query param "secret" or header "X-Secret")
+  const offermaruSecret = functions.config().offermaru?.s2s_secret;
+  const querySecret = req.query.secret;
+  const headerSecret = req.headers['x-secret'];
+
+  const isValidRevtoo = req.headers['x-api-key'] === revtooSecret;
+  const isValidOffermaru = (querySecret === offermaruSecret) || (headerSecret === offermaruSecret);
+
+  if (!isValidRevtoo && !isValidOffermaru) {
+    console.error('Invalid or missing secret');
+    return res.status(403).send('Invalid secret');
   }
 
-  // Parse the incoming data
-  let data = req.body;
+  // --- PARSE DATA ---
 
-  // Handle different offerwall formats
   let userId, reward, transactionId, offerName;
 
-  // Check if it's Offermaru (they send query params in the URL)
+  // Offermaru sends data as query parameters (GET)
   if (req.method === 'GET' && req.query.user_id) {
-    // Offermaru sends data as query parameters
     userId = req.query.user_id;
     reward = parseFloat(req.query.user_reward) || 0;
     transactionId = req.query.transaction_id || `offermaru_${Date.now()}`;
     offerName = req.query.offer_name || 'Offermaru offer';
-  } else {
-    // Revtoo format (JSON body)
+  } 
+  // Revtoo sends JSON body (POST)
+  else {
+    const data = req.body;
     userId = data.user_id || data.userId;
     reward = parseFloat(data.reward) || 0;
     transactionId = data.transaction_id || data.transactionId;
     offerName = data.offer_name || 'Offerwall completion';
   }
 
-  // Validate input
+  // Validate
   if (!userId || reward <= 0) {
-    console.error('Invalid webhook data:', { userId, reward, data });
+    console.error('Invalid webhook data:', { userId, reward });
     return res.status(400).send('Missing user_id or invalid reward');
   }
 
@@ -58,10 +73,8 @@ exports.offerwallWebhook = functions.https.onRequest(async (req, res) => {
       const currentBalance = snap.data().balance || 0;
       const newBalance = currentBalance + reward;
 
-      // Update user balance
       transaction.update(userRef, { balance: newBalance });
 
-      // Record the earning
       const txRef = db.collection('transactions').doc();
       transaction.set(txRef, {
         userId: userId,
@@ -73,13 +86,8 @@ exports.offerwallWebhook = functions.https.onRequest(async (req, res) => {
       });
     });
 
-    // Respond with success (some offerwalls expect specific responses)
-    if (req.method === 'GET') {
-      // Offermaru expects a simple "OK" response
-      res.status(200).send('OK');
-    } else {
-      res.status(200).send('OK');
-    }
+    console.log(`✅ Credited ${reward} to user ${userId}`);
+    res.status(200).send('OK');
   } catch (error) {
     console.error('Webhook error:', error);
     res.status(500).send('Internal error');

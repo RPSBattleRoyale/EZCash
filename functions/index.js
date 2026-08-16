@@ -7,24 +7,47 @@ admin.initializeApp();
 const db = admin.firestore();
 
 // ========================
-// 1. OFFERWALL WEBHOOK
+// OFFERWALL WEBHOOK (Updated to handle multiple providers)
 // ========================
 exports.offerwallWebhook = functions.https.onRequest(async (req, res) => {
   // 🔒 Protect against fake requests
   const secret = functions.config().offerwall?.secret;
   if (req.headers['x-api-key'] !== secret) {
-    return res.status(403).send('Invalid API key');
+    // Also check for Offermaru's format
+    if (req.headers['authorization'] !== `Bearer ${functions.config().offermaru?.api_key}`) {
+      return res.status(403).send('Invalid API key');
+    }
   }
 
-  const { user_id, reward, transaction_id } = req.body;
+  // Parse the incoming data
+  let data = req.body;
+
+  // Handle different offerwall formats
+  let userId, reward, transactionId, offerName;
+
+  // Check if it's Offermaru (they send query params in the URL)
+  if (req.method === 'GET' && req.query.user_id) {
+    // Offermaru sends data as query parameters
+    userId = req.query.user_id;
+    reward = parseFloat(req.query.user_reward) || 0;
+    transactionId = req.query.transaction_id || `offermaru_${Date.now()}`;
+    offerName = req.query.offer_name || 'Offermaru offer';
+  } else {
+    // Revtoo format (JSON body)
+    userId = data.user_id || data.userId;
+    reward = parseFloat(data.reward) || 0;
+    transactionId = data.transaction_id || data.transactionId;
+    offerName = data.offer_name || 'Offerwall completion';
+  }
 
   // Validate input
-  if (!user_id || !reward || reward <= 0) {
+  if (!userId || reward <= 0) {
+    console.error('Invalid webhook data:', { userId, reward, data });
     return res.status(400).send('Missing user_id or invalid reward');
   }
 
   try {
-    const userRef = db.collection('users').doc(user_id);
+    const userRef = db.collection('users').doc(userId);
 
     await db.runTransaction(async (transaction) => {
       const snap = await transaction.get(userRef);
@@ -33,7 +56,7 @@ exports.offerwallWebhook = functions.https.onRequest(async (req, res) => {
       }
 
       const currentBalance = snap.data().balance || 0;
-      const newBalance = currentBalance + parseFloat(reward);
+      const newBalance = currentBalance + reward;
 
       // Update user balance
       transaction.update(userRef, { balance: newBalance });
@@ -41,16 +64,22 @@ exports.offerwallWebhook = functions.https.onRequest(async (req, res) => {
       // Record the earning
       const txRef = db.collection('transactions').doc();
       transaction.set(txRef, {
-        userId: user_id,
+        userId: userId,
         type: 'earn',
-        amount: parseFloat(reward),
-        description: 'Offerwall completion',
-        offerwallTxId: transaction_id || 'unknown',
+        amount: reward,
+        description: offerName || 'Offerwall completion',
+        offerwallTxId: transactionId || 'unknown',
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
       });
     });
 
-    res.status(200).send('OK');
+    // Respond with success (some offerwalls expect specific responses)
+    if (req.method === 'GET') {
+      // Offermaru expects a simple "OK" response
+      res.status(200).send('OK');
+    } else {
+      res.status(200).send('OK');
+    }
   } catch (error) {
     console.error('Webhook error:', error);
     res.status(500).send('Internal error');

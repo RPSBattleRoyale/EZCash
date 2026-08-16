@@ -2,10 +2,5 @@
   "buildCommand": "npm install && npm run build",
   "outputDirectory": "build",
   "devCommand": "npm run start",
-  "installCommand": "npm install",
-  "functions": {
-    "api/**/*.js": {
-      "runtime": "nodejs18.x"
-    }
-  }
+  "installCommand": "npm install"
 }

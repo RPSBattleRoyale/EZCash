@@ -213,10 +213,10 @@ function App() {
     setMessage('');
   };
 
-  // ===== WITHDRAWAL REQUEST =====
+  // ===== WITHDRAWAL REQUEST (Updated for Vercel) =====
   const handleWithdraw = async () => {
     setWithdrawMessage('');
-    // Validate amount
+    
     const amount = parseFloat(withdrawAmount);
     if (!amount || amount <= 0) {
       setWithdrawMessage('⚠️ Please enter a valid amount.');
@@ -242,20 +242,30 @@ function App() {
     setWithdrawLoading(true);
 
     try {
-      const functions = getFunctions();
-      const requestWithdrawal = httpsCallable(functions, 'requestWithdrawal');
-      const result = await requestWithdrawal({ amount, paypalEmail });
-      if (result.data.success) {
+      // Get the Firebase ID token
+      const idToken = await auth.currentUser.getIdToken();
+
+      const response = await fetch('/api/requestWithdrawal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ amount, paypalEmail }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
         setWithdrawMessage('✅ Withdrawal request submitted! It will be processed within 24-48 hours.');
         setWithdrawAmount('');
         setPaypalEmail('');
-        // Refresh balance (will update via onSnapshot)
       } else {
-        setWithdrawMessage('❌ Something went wrong. Please try again.');
+        setWithdrawMessage(`❌ ${data.error || 'Something went wrong. Please try again.'}`);
       }
     } catch (error) {
       console.error('Withdrawal error:', error);
-      setWithdrawMessage(`❌ ${error.message || 'Request failed. Please try again.'}`);
+      setWithdrawMessage('❌ Network error. Please try again.');
     } finally {
       setWithdrawLoading(false);
     }

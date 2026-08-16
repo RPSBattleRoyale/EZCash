@@ -1,14 +1,12 @@
-import admin from '../lib/firebaseAdmin.js';
+const admin = require('../lib/firebaseAdmin.js');
 
 const db = admin.firestore();
 
-export default async function handler(req, res) {
-  // Only allow POST requests
+module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // --- AUTH: Verify Firebase ID Token ---
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -26,7 +24,6 @@ export default async function handler(req, res) {
   const uid = decodedToken.uid;
   const { amount, paypalEmail } = req.body;
 
-  // --- VALIDATE INPUT ---
   if (!amount || amount <= 0) {
     return res.status(400).json({ error: 'Amount must be greater than 0' });
   }
@@ -41,24 +38,20 @@ export default async function handler(req, res) {
     }
     const userData = userSnap.data();
 
-    // --- CHECK VERIFICATION ---
     if (!userData.emailVerified) {
       return res.status(403).json({ error: 'Please verify your email before withdrawing.' });
     }
 
-    // --- MINIMUM WITHDRAWAL ---
     const firstWithdrawalDone = userData.firstWithdrawalDone || false;
     const minAmount = firstWithdrawalDone ? 1 : 5;
     if (amount < minAmount) {
       return res.status(400).json({ error: `Minimum withdrawal is $${minAmount}.` });
     }
 
-    // --- INSUFFICIENT FUNDS ---
     if (amount > (userData.balance || 0)) {
       return res.status(400).json({ error: 'Insufficient balance' });
     }
 
-    // --- PROCESS WITHDRAWAL ---
     const userRef = db.collection('users').doc(uid);
     const withdrawalRef = db.collection('withdrawals').doc();
 
@@ -88,4 +81,4 @@ export default async function handler(req, res) {
     console.error('Withdrawal error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
-}
+};

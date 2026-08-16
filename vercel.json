@@ -2,5 +2,13 @@
   "buildCommand": "npm install && npm run build",
   "outputDirectory": "build",
   "devCommand": "npm run start",
-  "installCommand": "npm install"
+  "installCommand": "npm install",
+  "functions": {
+    "api/offerwallWebhook.cjs": {
+      "runtime": "nodejs18.x"
+    },
+    "api/requestWithdrawal.cjs": {
+      "runtime": "nodejs18.x"
+    }
+  }
 }

@@ -271,6 +271,8 @@ function App() {
     switch (selectedOfferwall) {
       case 'revtoo':
         return `https://revtoo.com/offerwall/5ligfp5sxw86qi5mb3175nx48l09dd/${encodeURIComponent(userEmail)}`;
+      case 'offermaru':
+        return `https://wall.offermaru.com/20415?user_id=${encodeURIComponent(userEmail)}`;
       default:
         return 'https://www.offerwalls.com/placeholder';
     }
@@ -402,6 +404,7 @@ function App() {
               }}
             >
               <option value="revtoo">Revtoo</option>
+              <option value="offermaru">Offermaru</option>
             </select>
           </div>
           <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>

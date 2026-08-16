@@ -3,12 +3,8 @@
   "outputDirectory": "build",
   "devCommand": "npm run start",
   "installCommand": "npm install",
-  "functions": {
-    "api/offerwallWebhook.cjs": {
-      "runtime": "nodejs18.x"
-    },
-    "api/requestWithdrawal.cjs": {
-      "runtime": "nodejs18.x"
-    }
-  }
+  "routes": [
+    { "src": "/api/offerwallWebhook", "dest": "/api/offerwallWebhook.cjs" },
+    { "src": "/api/requestWithdrawal", "dest": "/api/requestWithdrawal.cjs" }
+  ]
 }

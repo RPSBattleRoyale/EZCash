@@ -7,7 +7,19 @@ import {
   onAuthStateChanged,
 } from 'firebase/auth';
 import { auth, db } from './firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  doc,
+  setDoc,
+  serverTimestamp,
+  Timestamp,
+  getDoc,
+  onSnapshot,
+} from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 function App() {
   // ===== STATE =====
@@ -24,32 +36,48 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
+  // User data from Firestore
+  const [userData, setUserData] = useState({ balance: 0, firstWithdrawalDone: false });
+
   // Admin data
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
   const [loadingWithdrawals, setLoadingWithdrawals] = useState(false);
 
-  // Animated counter
-  const [count, setCount] = useState(0);
-  const targetCount = 100018;
+  // Daily signup count
+  const [dailySignups, setDailySignups] = useState(0);
+  const [loadingDailyCount, setLoadingDailyCount] = useState(true);
+
+  // Offerwall dropdown
+  const [selectedOfferwall, setSelectedOfferwall] = useState('revtoo');
+
+  // Withdrawal form state
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [paypalEmail, setPaypalEmail] = useState('');
+  const [withdrawMessage, setWithdrawMessage] = useState('');
+  const [withdrawLoading, setWithdrawLoading] = useState(false);
 
   // ===== EFFECTS =====
+  // Fetch daily signups
+  const fetchDailySignups = async () => {
+    setLoadingDailyCount(true);
+    try {
+      const yesterday = Timestamp.fromDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      const q = query(collection(db, 'users'), where('createdAt', '>=', yesterday));
+      const snapshot = await getDocs(q);
+      setDailySignups(snapshot.size);
+    } catch (error) {
+      console.error('Error fetching daily signups:', error);
+      setDailySignups(0);
+    } finally {
+      setLoadingDailyCount(false);
+    }
+  };
+
   useEffect(() => {
-    let start = 0;
-    const duration = 2000;
-    const increment = targetCount / (duration / 16);
-    const timer = setInterval(() => {
-      start += increment;
-      if (start >= targetCount) {
-        setCount(targetCount);
-        clearInterval(timer);
-      } else {
-        setCount(Math.floor(start));
-      }
-    }, 16);
-    return () => clearInterval(timer);
+    fetchDailySignups();
   }, []);
 
-  // Listen to auth state (FIXED: no forced redirect loop)
+  // Listen to auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -57,14 +85,27 @@ function App() {
         const adminEmail = 'flynzb9957@zohomail.com';
         const isAdminUser = currentUser.email === adminEmail;
         setIsAdmin(isAdminUser);
-        
-        // Only redirect if they were on home or login page (first login)
+
+        // Fetch user data from Firestore
+        const userRef = doc(db, 'users', currentUser.uid);
+        const unsubUser = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setUserData({
+              balance: docSnap.data().balance || 0,
+              firstWithdrawalDone: docSnap.data().firstWithdrawalDone || false,
+            });
+          }
+        });
+
         if (currentPage === 'home' || currentPage === 'login') {
           setCurrentPage('dashboard');
         }
+
+        // Cleanup user listener on logout
+        return () => unsubUser();
       } else {
         setIsAdmin(false);
-        // Only redirect to home if they weren't already there
+        setUserData({ balance: 0, firstWithdrawalDone: false });
         if (currentPage !== 'home' && currentPage !== 'login') {
           setCurrentPage('home');
         }
@@ -72,7 +113,7 @@ function App() {
       setLoadingAuth(false);
     });
     return () => unsubscribe();
-  }, []); // 👈 EMPTY dependency array – runs only once on mount
+  }, []);
 
   // Fetch pending withdrawals when admin panel loads
   useEffect(() => {
@@ -110,11 +151,19 @@ function App() {
     setIsLoading(true);
     try {
       const userCred = await createUserWithEmailAndPassword(auth, email, password);
+      await setDoc(doc(db, 'users', userCred.user.uid), {
+        email: userCred.user.email,
+        createdAt: serverTimestamp(),
+        balance: 0,
+        firstWithdrawalDone: false,
+        emailVerified: false,
+      });
       await sendEmailVerification(userCred.user);
       await signOut(auth);
       setMessage('✅ Verification email sent! Please check your inbox and click the link to verify your email. You can withdraw only after verifying.');
       setEmail('');
       setPassword('');
+      fetchDailySignups();
     } catch (error) {
       if (error.code === 'auth/email-already-in-use') {
         setMessage('❌ This email is already registered. Please log in instead.');
@@ -164,9 +213,68 @@ function App() {
     setMessage('');
   };
 
+  // ===== WITHDRAWAL REQUEST =====
+  const handleWithdraw = async () => {
+    setWithdrawMessage('');
+    // Validate amount
+    const amount = parseFloat(withdrawAmount);
+    if (!amount || amount <= 0) {
+      setWithdrawMessage('⚠️ Please enter a valid amount.');
+      return;
+    }
+
+    const minAmount = userData.firstWithdrawalDone ? 1 : 5;
+    if (amount < minAmount) {
+      setWithdrawMessage(`⚠️ Minimum withdrawal is $${minAmount}.`);
+      return;
+    }
+
+    if (amount > userData.balance) {
+      setWithdrawMessage(`⚠️ Insufficient balance. You have $${userData.balance.toFixed(2)}.`);
+      return;
+    }
+
+    if (!paypalEmail || !paypalEmail.includes('@')) {
+      setWithdrawMessage('⚠️ Please enter a valid PayPal email.');
+      return;
+    }
+
+    setWithdrawLoading(true);
+
+    try {
+      const functions = getFunctions();
+      const requestWithdrawal = httpsCallable(functions, 'requestWithdrawal');
+      const result = await requestWithdrawal({ amount, paypalEmail });
+      if (result.data.success) {
+        setWithdrawMessage('✅ Withdrawal request submitted! It will be processed within 24-48 hours.');
+        setWithdrawAmount('');
+        setPaypalEmail('');
+        // Refresh balance (will update via onSnapshot)
+      } else {
+        setWithdrawMessage('❌ Something went wrong. Please try again.');
+      }
+    } catch (error) {
+      console.error('Withdrawal error:', error);
+      setWithdrawMessage(`❌ ${error.message || 'Request failed. Please try again.'}`);
+    } finally {
+      setWithdrawLoading(false);
+    }
+  };
+
   // ===== SOCIAL PLACEHOLDERS =====
   const handleGoogleSignUp = () => setMessage('🔐 Google sign-up coming soon!');
   const handleFacebookSignUp = () => setMessage('🔐 Facebook sign-up coming soon!');
+
+  // ===== OFFERWALL URL =====
+  const getOfferwallUrl = () => {
+    const userEmail = user?.email || '';
+    switch (selectedOfferwall) {
+      case 'revtoo':
+        return `https://revtoo.com/offerwall/5ligfp5sxw86qi5mb3175nx48l09dd/${encodeURIComponent(userEmail)}`;
+      default:
+        return 'https://www.offerwalls.com/placeholder';
+    }
+  };
 
   // ===== PAGE COMPONENTS =====
   const renderHome = () => (
@@ -212,7 +320,9 @@ function App() {
       </div>
 
       <div className="social-proof">
-        <span className="counter">{count.toLocaleString()}+</span>
+        <span className="counter">
+          {loadingDailyCount ? '...' : dailySignups.toLocaleString()}+
+        </span>
         <span>sign ups in the past 24 hours</span>
       </div>
     </div>
@@ -256,75 +366,114 @@ function App() {
     </div>
   );
 
-	const renderDashboard = () => {
-	  // State for the selected offerwall
-	  const [selectedOfferwall, setSelectedOfferwall] = useState('revtoo');
+  const renderDashboard = () => (
+    <div className="hero">
+      <h1 style={{ fontSize: '38px' }}>👋 Welcome, {user?.email}</h1>
+      <p className="subtitle">Complete offers below to earn cash!</p>
 
-	  // Function to get the offerwall URL based on the selection
-	  const getOfferwallUrl = () => {
-	    const userEmail = user?.email || '';
-	    switch (selectedOfferwall) {
-	      case 'revtoo':
-	        // Using the template you provided, replacing %emailHere%
-	        return `https://revtoo.com/offerwall/5ligfp5sxw86qi5mb3175nx48l09dd/${encodeURIComponent(userEmail)}`;
-	      default:
-	        return 'https://www.offerwalls.com/placeholder';
-	    }
-	  };
+      <div className="dashboard-card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
+          <div>
+            <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your Balance</div>
+            <div style={{ fontSize: '32px', fontWeight: '700', color: '#00f5a0' }}>
+              ${userData.balance.toFixed(2)}
+            </div>
+          </div>
+          <div style={{ fontSize: '13px', color: '#4a4f6f' }}>
+            {user?.emailVerified ? '✅ Verified' : '⚠️ Verify your email to withdraw'}
+          </div>
+        </div>
 
-	  return (
-	    <div className="hero">
-	      <h1 style={{ fontSize: '38px' }}>👋 Welcome, {user?.email}</h1>
-	      <p className="subtitle">Complete offers below to earn cash!</p>
+        <div style={{ marginTop: '10px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <div style={{ color: '#a0aec0', fontWeight: '600' }}>📱 Offerwall</div>
+            <select
+              value={selectedOfferwall}
+              onChange={(e) => setSelectedOfferwall(e.target.value)}
+              style={{
+                padding: '8px 15px',
+                borderRadius: '8px',
+                background: '#0d0f23',
+                color: '#fff',
+                border: '1px solid #2a2f4f',
+                fontSize: '14px',
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              <option value="revtoo">Revtoo</option>
+            </select>
+          </div>
+          <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>
+            <iframe
+              src={getOfferwallUrl()}
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              title="Offerwall"
+            />
+          </div>
+          <div style={{ marginTop: '10px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
+            💡 Complete offers, surveys, and app downloads to earn real cash. Your balance updates automatically.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
-	      <div className="dashboard-card">
-	        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
-	          <div>
-	            <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your Balance</div>
-	            <div style={{ fontSize: '32px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
-	          </div>
-	          <div style={{ fontSize: '13px', color: '#4a4f6f' }}>
-	            {user?.emailVerified ? '✅ Verified' : '⚠️ Verify your email to withdraw'}
-	          </div>
-	        </div>
-
-	        <div style={{ marginTop: '10px' }}>
-	          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-	            <div style={{ color: '#a0aec0', fontWeight: '600' }}>📱 Offerwall</div>
-	            {/* --- DROPDOWN MENU --- */}
-	            <select
-	              value={selectedOfferwall}
-	              onChange={(e) => setSelectedOfferwall(e.target.value)}
-	              style={{
-	                padding: '8px 15px',
-	                borderRadius: '8px',
-	                background: '#0d0f23',
-	                color: '#fff',
-	                border: '1px solid #2a2f4f',
-	                fontSize: '14px',
-	                cursor: 'pointer',
-	                outline: 'none',
-	              }}
-	            >
-	              <option value="revtoo">Revtoo</option>
-	              {/* You can add more options here later */}
-	            </select>
-	          </div>
-	          <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>
-	            <iframe
-	              src={getOfferwallUrl()}
-	              style={{ width: '100%', height: '100%', border: 'none' }}
-	              title="Offerwall"
-	            />
-	          </div>
-	          <div style={{ marginTop: '10px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
-	            💡 Complete offers, surveys, and app downloads to earn real cash. Your balance updates automatically.
-	          </div>
-	        </div>
-	      </div>
-	    </div>
-	  );
-	};
+  const renderCashout = () => {
+    const minAmount = userData.firstWithdrawalDone ? 1 : 5;
+    return (
+      <div className="hero">
+        <h1 style={{ fontSize: '38px' }}>💰 Cash Out Your Earnings</h1>
+        <p className="subtitle">
+          Minimum withdrawal: ${minAmount} for {userData.firstWithdrawalDone ? 'subsequent' : 'first'} withdrawal.
+        </p>
+        <div className="signup-card" style={{ maxWidth: '400px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+            <div style={{ fontSize: '40px', fontWeight: '700', color: '#00f5a0' }}>
+              ${userData.balance.toFixed(2)}
+            </div>
+            <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your current balance</div>
+          </div>
+          <div className="input-group">
+            <input
+              type="number"
+              placeholder={`Amount (min $${minAmount})`}
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              disabled={withdrawLoading}
+            />
+            <input
+              type="email"
+              placeholder="PayPal email address"
+              value={paypalEmail}
+              onChange={(e) => setPaypalEmail(e.target.value)}
+              disabled={withdrawLoading}
+            />
+            <button
+              className="btn-primary"
+              onClick={handleWithdraw}
+              disabled={withdrawLoading || !user?.emailVerified}
+            >
+              {withdrawLoading ? 'Processing...' : 'Request Withdrawal'}
+            </button>
+          </div>
+          {!user?.emailVerified && (
+            <div style={{ marginTop: '10px', color: '#ff6b6b', fontSize: '14px' }}>
+              ⚠️ Please verify your email before withdrawing.
+            </div>
+          )}
+          {withdrawMessage && (
+            <div style={{ marginTop: '12px', padding: '10px', borderRadius: '8px', background: '#1a1f3a', color: '#a0aec0', fontSize: '14px', textAlign: 'center' }}>
+              {withdrawMessage}
+            </div>
+          )}
+          <div style={{ marginTop: '15px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
+            ⚡ Withdrawals are sent to your PayPal account within 24-48 hours.
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const renderAdminPanel = () => (
     <div className="hero">
@@ -406,7 +555,7 @@ function App() {
           background: #0a0b1e;
           color: #fff;
           min-height: 100vh;
-          display: block; /* FIXED: allows scrolling */
+          display: block;
         }
         .app {
           width: 100%;
@@ -613,28 +762,7 @@ function App() {
         {!user && currentPage === 'login' && renderLogin()}
         {!user && currentPage === 'home' && renderHome()}
         {user && currentPage === 'dashboard' && renderDashboard()}
-        {user && currentPage === 'cashout' && (
-          <div className="hero">
-            <h1 style={{ fontSize: '38px' }}>💰 Cash Out Your Earnings</h1>
-            <p className="subtitle">Minimum withdrawal: $5 for first time, $1 afterwards.</p>
-            <div className="signup-card" style={{ maxWidth: '400px' }}>
-              <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-                <div style={{ fontSize: '40px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
-                <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your current balance</div>
-              </div>
-              <div className="input-group">
-                <input type="number" placeholder="Amount to withdraw (min $5)" />
-                <input type="email" placeholder="PayPal email address" />
-                <button className="btn-primary" onClick={() => alert('🚀 Withdrawal request sent!')}>
-                  Request Withdrawal
-                </button>
-              </div>
-              <div style={{ marginTop: '15px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
-                ⚡ Withdrawals are sent to your PayPal account within 24-48 hours.
-              </div>
-            </div>
-          </div>
-        )}
+        {user && currentPage === 'cashout' && renderCashout()}
         {user && isAdmin && currentPage === 'admin' && renderAdminPanel()}
       </div>
     </>

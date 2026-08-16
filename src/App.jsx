@@ -256,38 +256,75 @@ function App() {
     </div>
   );
 
-  const renderDashboard = () => (
-    <div className="hero">
-      <h1 style={{ fontSize: '38px' }}>👋 Welcome, {user?.email}</h1>
-      <p className="subtitle">Complete offers below to earn cash!</p>
+	const renderDashboard = () => {
+	  // State for the selected offerwall
+	  const [selectedOfferwall, setSelectedOfferwall] = useState('revtoo');
 
-      <div className="dashboard-card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
-          <div>
-            <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your Balance</div>
-            <div style={{ fontSize: '32px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
-          </div>
-          <div style={{ fontSize: '13px', color: '#4a4f6f' }}>
-            {user?.emailVerified ? '✅ Verified' : '⚠️ Verify your email to withdraw'}
-          </div>
-        </div>
+	  // Function to get the offerwall URL based on the selection
+	  const getOfferwallUrl = () => {
+	    const userEmail = user?.email || '';
+	    switch (selectedOfferwall) {
+	      case 'revtoo':
+	        // Using the template you provided, replacing %emailHere%
+	        return `https://revtoo.com/offerwall/5ligfp5sxw86qi5mb3175nx48l09dd/${encodeURIComponent(userEmail)}`;
+	      default:
+	        return 'https://www.offerwalls.com/placeholder';
+	    }
+	  };
 
-        <div style={{ marginTop: '10px' }}>
-          <div style={{ color: '#a0aec0', marginBottom: '10px', fontWeight: '600' }}>📱 Offerwall</div>
-          <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>
-            <iframe
-              src="https://www.offerwalls.com/placeholder"
-              style={{ width: '100%', height: '100%', border: 'none' }}
-              title="Offerwall"
-            />
-          </div>
-          <div style={{ marginTop: '10px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
-            💡 Complete offers, surveys, and app downloads to earn real cash. Your balance updates automatically.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+	  return (
+	    <div className="hero">
+	      <h1 style={{ fontSize: '38px' }}>👋 Welcome, {user?.email}</h1>
+	      <p className="subtitle">Complete offers below to earn cash!</p>
+
+	      <div className="dashboard-card">
+	        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
+	          <div>
+	            <div style={{ color: '#4a4f6f', fontSize: '14px' }}>Your Balance</div>
+	            <div style={{ fontSize: '32px', fontWeight: '700', color: '#00f5a0' }}>$0.00</div>
+	          </div>
+	          <div style={{ fontSize: '13px', color: '#4a4f6f' }}>
+	            {user?.emailVerified ? '✅ Verified' : '⚠️ Verify your email to withdraw'}
+	          </div>
+	        </div>
+
+	        <div style={{ marginTop: '10px' }}>
+	          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+	            <div style={{ color: '#a0aec0', fontWeight: '600' }}>📱 Offerwall</div>
+	            {/* --- DROPDOWN MENU --- */}
+	            <select
+	              value={selectedOfferwall}
+	              onChange={(e) => setSelectedOfferwall(e.target.value)}
+	              style={{
+	                padding: '8px 15px',
+	                borderRadius: '8px',
+	                background: '#0d0f23',
+	                color: '#fff',
+	                border: '1px solid #2a2f4f',
+	                fontSize: '14px',
+	                cursor: 'pointer',
+	                outline: 'none',
+	              }}
+	            >
+	              <option value="revtoo">Revtoo</option>
+	              {/* You can add more options here later */}
+	            </select>
+	          </div>
+	          <div style={{ background: '#0d0f23', borderRadius: '12px', overflow: 'hidden', height: '500px', border: '1px solid #2a2f4f' }}>
+	            <iframe
+	              src={getOfferwallUrl()}
+	              style={{ width: '100%', height: '100%', border: 'none' }}
+	              title="Offerwall"
+	            />
+	          </div>
+	          <div style={{ marginTop: '10px', fontSize: '13px', color: '#4a4f6f', textAlign: 'center' }}>
+	            💡 Complete offers, surveys, and app downloads to earn real cash. Your balance updates automatically.
+	          </div>
+	        </div>
+	      </div>
+	    </div>
+	  );
+	};
 
   const renderAdminPanel = () => (
     <div className="hero">

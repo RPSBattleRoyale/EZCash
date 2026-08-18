@@ -7,7 +7,7 @@ import {
   onAuthStateChanged,
 } from 'firebase/auth';
 import { auth } from './firebase';
-import { supabase } from './supabase';
+import { getSupabaseClient } from './supabase.js';
 
 function App() {
   // ===== STATE =====
@@ -44,9 +44,13 @@ function App() {
   const [withdrawMessage, setWithdrawMessage] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
 
+  // Supabase client with auth token
+  const [supabase, setSupabase] = useState(null);
+  const [supabaseReady, setSupabaseReady] = useState(false);
+
   // ===== EFFECTS =====
 
-  // Auth listener
+  // Auth listener (with token exchange)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
@@ -54,73 +58,41 @@ function App() {
         const adminEmail = 'flynzb9957@zohomail.com';
         setIsAdmin(currentUser.email === adminEmail);
 
-        // Set up real-time subscription
-        const subscription = supabase
-          .channel(`user-${currentUser.uid}`)
-          .on(
-            'postgres_changes',
-            {
-              event: 'UPDATE',
-              schema: 'public',
-              table: 'users',
-              filter: `id=eq.${currentUser.uid}`,
-            },
-            (payload) => {
-              console.log('🔄 Balance updated via real-time:', payload.new.balance);
-              setUserData({
-                balance: payload.new.balance || 0,
-                firstWithdrawalDone: payload.new.first_withdrawal_done || false,
-              });
-            }
-          )
-          .subscribe();
-        
-        // Fallback: fetch balance every 5 seconds (helps if subscription fails)
-        const interval = setInterval(async () => {
-          const { data, error } = await supabase
-            .from('users')
-            .select('balance, first_withdrawal_done')
-            .eq('id', currentUser.uid)
-            .single();
-          
-          if (data && !error) {
-            setUserData({
-              balance: data.balance || 0,
-              firstWithdrawalDone: data.first_withdrawal_done || false,
-            });
-          }
-        }, 5000);
-        
-        // Cleanup on unmount
-        return () => {
-          subscription.unsubscribe();
-          clearInterval(interval);
-        };
-
-        // Fetch initial user data
-        const { data, error } = await supabase
-          .from('users')
-          .select('balance, first_withdrawal_done')
-          .eq('id', currentUser.uid)
-          .single();
-
-        if (data) {
-          setUserData({
-            balance: data.balance || 0,
-            firstWithdrawalDone: data.first_withdrawal_done || false,
+        // --- 1. Exchange Firebase token for Supabase JWT ---
+        try {
+          const firebaseToken = await currentUser.getIdToken();
+          const response = await fetch('/api/exchange-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ firebaseToken }),
           });
+          const data = await response.json();
+          if (data.token) {
+            const client = getSupabaseClient(data.token);
+            setSupabase(client);
+            setSupabaseReady(true);
+          } else {
+            console.error('Failed to get Supabase token:', data.error);
+            // Fallback: use anonymous client
+            const client = getSupabaseClient(null);
+            setSupabase(client);
+            setSupabaseReady(true);
+          }
+        } catch (err) {
+          console.error('Token exchange failed:', err);
+          // Fallback: use anonymous client
+          const client = getSupabaseClient(null);
+          setSupabase(client);
+          setSupabaseReady(true);
         }
 
         if (currentPage === 'home' || currentPage === 'login') {
           setCurrentPage('dashboard');
         }
-
-        return () => {
-          subscription.unsubscribe();
-        };
       } else {
         setIsAdmin(false);
         setUserData({ balance: 0, firstWithdrawalDone: false });
+        setSupabaseReady(false);
         if (currentPage !== 'home' && currentPage !== 'login') {
           setCurrentPage('home');
         }
@@ -130,8 +102,73 @@ function App() {
     return () => unsubscribe();
   }, []);
 
+  // Fetch user data when supabase is ready and user exists
+  useEffect(() => {
+    if (!supabaseReady || !user) return;
+
+    const fetchUserData = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('balance, first_withdrawal_done')
+        .eq('id', user.uid)
+        .single();
+
+      if (data) {
+        setUserData({
+          balance: data.balance || 0,
+          firstWithdrawalDone: data.first_withdrawal_done || false,
+        });
+      }
+    };
+
+    fetchUserData();
+
+    // Set up real-time subscription
+    const subscription = supabase
+      .channel(`user-${user.uid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'users',
+          filter: `id=eq.${user.uid}`,
+        },
+        (payload) => {
+          console.log('🔄 Real-time balance update:', payload.new.balance);
+          setUserData({
+            balance: payload.new.balance || 0,
+            firstWithdrawalDone: payload.new.first_withdrawal_done || false,
+          });
+        }
+      )
+      .subscribe();
+
+    // Fallback polling every 5 seconds
+    const interval = setInterval(async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('balance, first_withdrawal_done')
+        .eq('id', user.uid)
+        .single();
+
+      if (data && !error) {
+        setUserData({
+          balance: data.balance || 0,
+          firstWithdrawalDone: data.first_withdrawal_done || false,
+        });
+      }
+    }, 5000);
+
+    return () => {
+      subscription.unsubscribe();
+      clearInterval(interval);
+    };
+  }, [supabaseReady, user]);
+
   // Fetch daily signups from Supabase
   const fetchDailySignups = async () => {
+    if (!supabase) return;
     setLoadingDailyCount(true);
     try {
       const yesterday = new Date();
@@ -152,11 +189,14 @@ function App() {
   };
 
   useEffect(() => {
-    fetchDailySignups();
-  }, []);
+    if (supabase) {
+      fetchDailySignups();
+    }
+  }, [supabase]);
 
   // Admin fetch pending withdrawals
   const fetchPendingWithdrawals = async () => {
+    if (!supabase) return;
     setLoadingWithdrawals(true);
     try {
       const { data, error } = await supabase
@@ -175,10 +215,10 @@ function App() {
   };
 
   useEffect(() => {
-    if (isAdmin && currentPage === 'admin') {
+    if (isAdmin && currentPage === 'admin' && supabase) {
       fetchPendingWithdrawals();
     }
-  }, [isAdmin, currentPage]);
+  }, [isAdmin, currentPage, supabase]);
 
   // ===== HANDLERS =====
 
@@ -194,28 +234,16 @@ function App() {
     try {
       const userCred = await createUserWithEmailAndPassword(auth, email, password);
 
-      // Insert into Supabase
-      const { error: supabaseError } = await supabase
-        .from('users')
-        .insert({
-          id: userCred.user.uid,
-          email: userCred.user.email,
-          email_verified: false,
-        });
-
-      if (supabaseError) {
-        console.error('Supabase insert error:', supabaseError);
-        setMessage('❌ Failed to create user in database.');
-        await signOut(auth);
-        return;
-      }
+      // After Firebase signup, we'll insert into Supabase using the token-exchange flow
+      // But the user might not be logged in yet (we'll sign them out after verification)
+      // So we'll rely on the exchange-token endpoint to create the user on first login.
 
       await sendEmailVerification(userCred.user);
       await signOut(auth);
       setMessage('✅ Verification email sent! Check your inbox.');
       setEmail('');
       setPassword('');
-      fetchDailySignups();
+      // We'll refresh signups after they verify and log in
     } catch (error) {
       if (error.code === 'auth/email-already-in-use') {
         setMessage('❌ Email already registered. Please log in.');
@@ -266,6 +294,7 @@ function App() {
 
   // Withdrawal
   const handleWithdraw = async () => {
+    if (!supabase) return;
     setWithdrawMessage('');
     const amount = parseFloat(withdrawAmount);
     if (!amount || amount <= 0) {
@@ -292,7 +321,7 @@ function App() {
     setWithdrawLoading(true);
     try {
       const { data, error } = await supabase.rpc('request_withdrawal', {
-        p_user_id: auth.currentUser.uid,
+        p_user_id: user.uid,
         p_amount: amount,
         p_paypal_email: paypalEmail,
       });
@@ -505,7 +534,7 @@ function App() {
             <button
               className="btn-primary"
               onClick={handleWithdraw}
-              disabled={withdrawLoading || !user?.emailVerified}
+              disabled={withdrawLoading || !user?.emailVerified || !supabase}
             >
               {withdrawLoading ? 'Processing...' : 'Request Withdrawal'}
             </button>
@@ -587,16 +616,16 @@ function App() {
     </div>
   );
 
-  // ===== MAIN RENDER =====
-  if (loadingAuth) {
+  // ===== LOADING SCREEN =====
+  if (loadingAuth || !supabaseReady) {
     return (
-      <div style={{ 
-        display: 'flex', 
+      <div style={{
+        display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        height: '100vh', 
-        background: '#0a0b1e', 
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        background: '#0a0b1e',
         color: '#fff',
         gap: '20px',
       }}>
@@ -619,10 +648,7 @@ function App() {
     );
   }
 
-  // CSS is the same as before – keep it or import from a file.
-  // For brevity, I'm including inline styles; you can move them to App.css.
-  const styles = { /* ... your existing CSS ... */ };
-
+  // ===== MAIN RENDER =====
   return (
     <>
       <style>{`

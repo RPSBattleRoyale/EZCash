@@ -1,4 +1,4 @@
-const admin = require('../lib/firebaseAdmin.cjs');
+const admin = require('../lib/firebaseAdmin.js');
 
 const db = admin.firestore();
 

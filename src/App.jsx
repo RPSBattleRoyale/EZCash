@@ -54,7 +54,7 @@ function App() {
         const adminEmail = 'flynzb9957@zohomail.com';
         setIsAdmin(currentUser.email === adminEmail);
 
-        // Set up real-time subscription for user data
+        // Set up real-time subscription
         const subscription = supabase
           .channel(`user-${currentUser.uid}`)
           .on(
@@ -66,6 +66,7 @@ function App() {
               filter: `id=eq.${currentUser.uid}`,
             },
             (payload) => {
+              console.log('🔄 Balance updated via real-time:', payload.new.balance);
               setUserData({
                 balance: payload.new.balance || 0,
                 firstWithdrawalDone: payload.new.first_withdrawal_done || false,
@@ -73,6 +74,28 @@ function App() {
             }
           )
           .subscribe();
+        
+        // Fallback: fetch balance every 5 seconds (helps if subscription fails)
+        const interval = setInterval(async () => {
+          const { data, error } = await supabase
+            .from('users')
+            .select('balance, first_withdrawal_done')
+            .eq('id', currentUser.uid)
+            .single();
+          
+          if (data && !error) {
+            setUserData({
+              balance: data.balance || 0,
+              firstWithdrawalDone: data.first_withdrawal_done || false,
+            });
+          }
+        }, 5000);
+        
+        // Cleanup on unmount
+        return () => {
+          subscription.unsubscribe();
+          clearInterval(interval);
+        };
 
         // Fetch initial user data
         const { data, error } = await supabase
@@ -567,8 +590,31 @@ function App() {
   // ===== MAIN RENDER =====
   if (loadingAuth) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0b1e', color: '#fff' }}>
-        Loading...
+      <div style={{ 
+        display: 'flex', 
+        flexDirection: 'column',
+        alignItems: 'center', 
+        justifyContent: 'center', 
+        height: '100vh', 
+        background: '#0a0b1e', 
+        color: '#fff',
+        gap: '20px',
+      }}>
+        <div style={{
+          width: '48px',
+          height: '48px',
+          border: '4px solid #1a1f3a',
+          borderTop: '4px solid #00f5a0',
+          borderRadius: '50%',
+          animation: 'spin 1s linear infinite',
+        }} />
+        <p style={{ color: '#4a4f6f', fontSize: '16px' }}>Loading EZCash...</p>
+        <style>{`
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `}</style>
       </div>
     );
   }

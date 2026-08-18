@@ -15,12 +15,16 @@ module.exports = async function handler(req, res) {
   const offermaruSecret = process.env.OFFERMARU_S2S_SECRET;
   const revtooSecret = process.env.OFFERWALL_SECRET;
 
-  const querySecret = req.query.secret;
-  const headerSecret = req.headers['x-secret'];
+  // Check both header AND query parameter
   const apiKeyHeader = req.headers['x-api-key'];
-
-  const isValidOffermaru = (querySecret === offermaruSecret) || (headerSecret === offermaruSecret);
-  const isValidRevtoo = (apiKeyHeader === revtooSecret);
+  const querySecret = req.query.secret;
+  
+  const isValidRevtoo = (apiKeyHeader === revtooSecret) || (querySecret === revtooSecret);
+  
+  if (!isValidRevtoo) {
+    console.error('❌ Invalid Revtoo secret');
+    return res.status(403).send('Invalid secret');
+  }
 
   // ============================================================
   // 2. PARSE

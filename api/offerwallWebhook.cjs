@@ -1,7 +1,5 @@
-const admin = require('../lib/firebaseAdmin.cjs');
 const crypto = require('crypto');
-
-const db = admin.firestore();
+const { supabase } = require('../lib/supabaseClient.js');
 
 module.exports = async function handler(req, res) {
   console.log('📨 Webhook received:', {
@@ -12,38 +10,43 @@ module.exports = async function handler(req, res) {
   });
 
   // ============================================================
-  // 1. SECURITY CHECKS
+  // 1. SECURITY
   // ============================================================
-
   const offermaruSecret = process.env.OFFERMARU_S2S_SECRET;
+  const revtooSecret = process.env.OFFERWALL_SECRET;
+
   const querySecret = req.query.secret;
   const headerSecret = req.headers['x-secret'];
+  const apiKeyHeader = req.headers['x-api-key'];
+
   const isValidOffermaru = (querySecret === offermaruSecret) || (headerSecret === offermaruSecret);
+  const isValidRevtoo = (apiKeyHeader === revtooSecret);
 
   // ============================================================
-  // 2. PARSE DATA
+  // 2. PARSE
   // ============================================================
+  let userId, reward, transactionId, offerName;
 
-  let userId, reward, transactionId, offerName, status;
-
-  // --- A. Offermaru (GET) ---
+  // --- Offermaru (GET) ---
   if (req.method === 'GET' && req.query.user_id) {
     if (!isValidOffermaru) {
       console.error('❌ Invalid Offermaru secret');
       return res.status(403).send('Invalid secret');
     }
-
     userId = req.query.user_id;
     reward = parseFloat(req.query.user_reward) || 0;
     transactionId = req.query.transaction_id || `offermaru_${Date.now()}`;
     offerName = req.query.offer_name || 'Offermaru offer';
-    status = '1';
   }
 
-  // --- B. Revtoo (POST) ---
+  // --- Revtoo (POST) ---
   else if (req.method === 'POST') {
-    const data = req.body;
+    if (!isValidRevtoo) {
+      console.error('❌ Invalid Revtoo secret');
+      return res.status(403).send('Invalid secret');
+    }
 
+    const data = req.body;
     const subId = data.subId;
     const rewardRaw = parseFloat(data.reward) || 0;
     const transId = data.transId || `revtoo_${Date.now()}`;
@@ -52,13 +55,8 @@ module.exports = async function handler(req, res) {
     const signature = data.signature;
     const debug = data.debug;
 
-    // Verify Revtoo signature
+    // --- Signature verification ---
     const secretKey = process.env.OFFERWALL_SECRET;
-    if (!secretKey) {
-      console.error('❌ OFFERWALL_SECRET not set');
-      return res.status(500).send('Server configuration error');
-    }
-
     const signatureString = `${subId}${transId}${rewardRaw}${secretKey}`;
     const expectedSignature = crypto.createHash('md5').update(signatureString).digest('hex');
 
@@ -67,13 +65,11 @@ module.exports = async function handler(req, res) {
       return res.status(403).send('Invalid signature');
     }
 
-    // Skip test postbacks
     if (debug === '1') {
       console.log('🧪 Skipping test postback');
       return res.status(200).send('OK');
     }
 
-    // Only process credit status
     if (statusRaw !== '1') {
       console.log(`⏭️ Skipping non-credit status: ${statusRaw}`);
       return res.status(200).send('OK');
@@ -83,10 +79,9 @@ module.exports = async function handler(req, res) {
     reward = rewardRaw;
     transactionId = transId;
     offerName = offerNameRaw || 'Revtoo offer';
-    status = statusRaw;
   }
 
-  // --- C. Unknown ---
+  // --- Unknown ---
   else {
     console.error('❌ Unsupported request');
     return res.status(400).send('Bad request');
@@ -95,64 +90,41 @@ module.exports = async function handler(req, res) {
   // ============================================================
   // 3. VALIDATE
   // ============================================================
-
   if (!userId || reward <= 0) {
     console.error('❌ Invalid data:', { userId, reward });
     return res.status(400).send('Missing user_id or invalid reward');
   }
 
   // ============================================================
-  // 4. DUPLICATE CHECK
+  // 4. CREDIT via Supabase RPC
   // ============================================================
-
   try {
-    const txSnapshot = await db.collection('transactions')
-      .where('offerwallTxId', '==', transactionId)
-      .limit(1)
-      .get();
-
-    if (!txSnapshot.empty) {
-      console.log(`⏭️ Duplicate transaction ${transactionId}`);
-      return res.status(200).send('OK');
-    }
-  } catch (error) {
-    console.error('⚠️ Duplicate check error:', error);
-  }
-
-  // ============================================================
-  // 5. CREDIT USER
-  // ============================================================
-
-  try {
-    const userRef = db.collection('users').doc(userId);
-
-    await db.runTransaction(async (transaction) => {
-      const snap = await transaction.get(userRef);
-      if (!snap.exists) {
-        throw new Error(`User ${userId} not found`);
-      }
-
-      const currentBalance = snap.data().balance || 0;
-      const newBalance = currentBalance + reward;
-
-      transaction.update(userRef, { balance: newBalance });
-
-      const txRef = db.collection('transactions').doc();
-      transaction.set(txRef, {
-        userId: userId,
-        type: 'earn',
-        amount: reward,
-        description: offerName || 'Offerwall completion',
-        offerwallTxId: transactionId || 'unknown',
-        source: offerName?.includes('Revtoo') ? 'revtoo' : 'offermaru',
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      });
+    const { data, error } = await supabase.rpc('credit_offerwall', {
+      p_user_id: userId,
+      p_amount: reward,
+      p_tx_id: transactionId,
+      p_source: offerName?.includes('Revtoo') ? 'revtoo' : 'offermaru',
     });
 
+    if (error) {
+      console.error('❌ Supabase error:', error);
+      // If duplicate, still return OK (offerwall expects 200)
+      if (error.message.includes('Duplicate transaction')) {
+        console.log('⏭️ Duplicate transaction, ignoring');
+        return res.status(200).send('OK');
+      }
+      return res.status(500).send('Internal error');
+    }
+
+    if (data && !data.success) {
+      console.error('❌ RPC returned error:', data.error);
+      return res.status(500).send('Internal error');
+    }
+
     console.log(`✅ Credited ${reward} to user ${userId} (${offerName})`);
-    return res.status(200).send('OK');
-  } catch (error) {
-    console.error('❌ Webhook error:', error);
-    return res.status(500).send('Internal error');
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('❌ Webhook error:', err);
+    res.status(500).send('Internal error');
   }
 };

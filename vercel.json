@@ -2,7 +2,7 @@
   "buildCommand": "npm install && npm run build",
   "outputDirectory": "build",
   "devCommand": "npm run start",
-  "installCommand": "npm install",
+  "installCommand": "npm install --legacy-peer-deps",
   "routes": [
     { "src": "/api/offerwallWebhook", "dest": "/api/offerwallWebhook.cjs" },
     { "src": "/api/requestWithdrawal", "dest": "/api/requestWithdrawal.cjs" }

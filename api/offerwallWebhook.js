@@ -69,12 +69,16 @@ module.exports = async function handler(req, res) {
     if (req.headers['content-type']?.includes('multipart/form-data')) {
       try {
         data = await parseMultipart(req);
+        console.log('✅ Parsed multipart fields:', data);  // <-- ADD THIS
       } catch (err) {
         console.error('❌ Failed to parse multipart:', err);
         return res.status(400).send('Bad request');
       }
+    } else {
+      console.log('📦 Body (JSON):', data);
     }
-
+  
+    // Now extract fields
     const subId = data.subId;
     const rewardRaw = parseFloat(data.reward) || 0;
     const transId = data.transId || `revtoo_${Date.now()}`;
@@ -82,6 +86,8 @@ module.exports = async function handler(req, res) {
     const statusRaw = data.status;
     const signature = data.signature;
     const debug = data.debug;
+  
+    console.log('📊 Extracted:', { subId, rewardRaw, transId, statusRaw, signature, debug });
 
     // --- Signature verification ---
     const secretKey = process.env.OFFERWALL_SECRET;

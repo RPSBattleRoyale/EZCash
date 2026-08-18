@@ -82,21 +82,24 @@ module.exports = async function handler(req, res) {
     const subId = data.subId;
     const rewardRaw = parseFloat(data.reward) || 0;
     const transId = data.transId || `revtoo_${Date.now()}`;
-    const offerNameRaw = data.offer_name || 'Revtoo offer';
     const statusRaw = data.status;
     const signature = data.signature;
     const debug = data.debug;
-  
-    console.log('📊 Extracted:', { subId, rewardRaw, transId, statusRaw, signature, debug });
 
     // --- Signature verification ---
-    const secretKey = process.env.OFFERWALL_SECRET;
-    const signatureString = `${subId}${transId}${rewardRaw}${secretKey}`;
-    const expectedSignature = crypto.createHash('md5').update(signatureString).digest('hex');
+    const secretKey = process.env.OFFERWALL_SECRET; // Your Revtoo secret key
 
+    // 1. Concatenate the values in the correct order
+    const stringToHash = subId + transId + rewardRaw + secretKey;
+
+    // 2. Generate the MD5 hash
+    const expectedSignature = crypto.createHash('md5').update(stringToHash).digest('hex');
+
+    // 3. Compare the generated hash with the one received from Revtoo
     if (signature && expectedSignature !== signature) {
-      console.error('❌ Invalid Revtoo signature');
-      return res.status(403).send('Invalid signature');
+        console.error('❌ Invalid Revtoo signature');
+        console.log(`Expected: ${expectedSignature}, Received: ${signature}`);
+        return res.status(403).send('Invalid signature');
     }
 
     if (debug === '1') {

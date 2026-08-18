@@ -98,7 +98,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // Check status (credit only if status = 1)
+    // Check status
     if (statusRaw !== '1') {
       console.log(`⏭️ Skipping non-credit status: ${statusRaw}`);
       return res.status(200).send('OK');
@@ -117,19 +117,38 @@ module.exports = async function handler(req, res) {
   }
 
   // ============================================================
-  // 3. VALIDATE
+  // 3. VALIDATE & RESOLVE USER ID
   // ============================================================
   if (!userId || reward <= 0) {
     console.error('❌ Invalid data:', { userId, reward });
     return res.status(400).send('Missing user_id or invalid reward');
   }
 
+  // If userId looks like an email (contains '@'), look up the actual Firebase UID
+  let actualUserId = userId;
+  if (userId.includes('@')) {
+    console.log(`🔍 Looking up user by email: ${userId}`);
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', userId)
+      .single();
+
+    if (userError || !userData) {
+      console.error('❌ User not found with email:', userId);
+      // Return 200 OK to Revtoo (so they don't retry) but log error
+      return res.status(200).send('OK');
+    }
+    actualUserId = userData.id;
+    console.log(`✅ Found user ID: ${actualUserId} for email: ${userId}`);
+  }
+
   // ============================================================
-  // 4. CREDIT via Supabase RPC
+  // 4. CREDIT via Supabase RPC (using the actual UID)
   // ============================================================
   try {
     const { data, error } = await supabase.rpc('credit_offerwall', {
-      p_user_id: userId,
+      p_user_id: actualUserId,
       p_amount: reward,
       p_tx_id: transactionId,
       p_source: offerName?.includes('Revtoo') ? 'revtoo' : 'offermaru',
@@ -149,7 +168,7 @@ module.exports = async function handler(req, res) {
       return res.status(500).send('Internal error');
     }
 
-    console.log(`✅ Credited ${reward} to user ${userId} (${offerName})`);
+    console.log(`✅ Credited ${reward} to user ${actualUserId} (${offerName})`);
     res.status(200).send('OK');
   } catch (err) {
     console.error('❌ Webhook error:', err);

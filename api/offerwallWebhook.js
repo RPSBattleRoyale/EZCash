@@ -64,12 +64,11 @@ module.exports = async function handler(req, res) {
       return res.status(403).send('Invalid secret');
     }
 
-    // Parse multipart form data if needed
     let data = req.body;
     if (req.headers['content-type']?.includes('multipart/form-data')) {
       try {
         data = await parseMultipart(req);
-        console.log('✅ Parsed multipart fields:', data);  // <-- ADD THIS
+        console.log('✅ Parsed multipart fields:', data);
       } catch (err) {
         console.error('❌ Failed to parse multipart:', err);
         return res.status(400).send('Bad request');
@@ -77,8 +76,7 @@ module.exports = async function handler(req, res) {
     } else {
       console.log('📦 Body (JSON):', data);
     }
-  
-    // Now extract fields
+
     const subId = data.subId;
     const rewardRaw = parseFloat(data.reward) || 0;
     const transId = data.transId || `revtoo_${Date.now()}`;
@@ -86,42 +84,21 @@ module.exports = async function handler(req, res) {
     const signature = data.signature;
     const debug = data.debug;
 
-    // --- Signature verification ---
-    const secretKey = process.env.OFFERWALL_SECRET;
-    
-    // For test postbacks (debug=1), skip signature verification
+    // --- Signature verification (skip for test postbacks) ---
     if (debug === '1') {
       console.log('🧪 Test postback (debug=1) - skipping signature verification');
-      // Still process the reward (but you might want to skip crediting real users)
-      // For now, we'll credit the user since it's a test
     } else {
-      // Production: verify signature
+      const secretKey = process.env.OFFERWALL_SECRET;
       const stringToHash = subId + transId + rewardRaw + secretKey;
       const expectedSignature = crypto.createHash('md5').update(stringToHash).digest('hex');
-    
+      console.log('🔑 Signature check:', { received: signature, expected: expectedSignature, stringUsed: stringToHash });
       if (signature && expectedSignature !== signature) {
         console.error('❌ Invalid Revtoo signature');
-        console.log(`Expected: ${expectedSignature}, Received: ${signature}`);
         return res.status(403).send('Invalid signature');
       }
     }
-    
-    console.log('🔑 Signature check:', {
-      received: signature,
-      expected: expectedSignature,
-      stringUsed: stringToHash,
-    });
-    
-    if (signature && expectedSignature !== signature) {
-      console.error('❌ Invalid Revtoo signature');
-      return res.status(403).send('Invalid signature');
-    }
 
-    if (debug === '1') {
-      console.log('🧪 Skipping test postback');
-      return res.status(200).send('OK');
-    }
-
+    // Check status (credit only if status = 1)
     if (statusRaw !== '1') {
       console.log(`⏭️ Skipping non-credit status: ${statusRaw}`);
       return res.status(200).send('OK');
@@ -130,7 +107,7 @@ module.exports = async function handler(req, res) {
     userId = subId;
     reward = rewardRaw;
     transactionId = transId;
-    offerName = offerNameRaw || 'Revtoo offer';
+    offerName = data.offer_name || 'Revtoo offer';
   }
 
   // --- Unknown ---

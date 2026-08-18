@@ -6,20 +6,8 @@ import {
   signInWithEmailAndPassword,
   onAuthStateChanged,
 } from 'firebase/auth';
-import { auth, db } from './firebase';
-import {
-  collection,
-  query,
-  where,
-  getDocs,
-  doc,
-  setDoc,
-  serverTimestamp,
-  Timestamp,
-  getDoc,
-  onSnapshot,
-} from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { auth } from './firebase';
+import { supabase } from './supabase';
 
 function App() {
   // ===== STATE =====
@@ -31,78 +19,82 @@ function App() {
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Auth state
+  // Auth
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
-  // User data from Firestore
+  // User data from Supabase
   const [userData, setUserData] = useState({ balance: 0, firstWithdrawalDone: false });
 
   // Admin data
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
   const [loadingWithdrawals, setLoadingWithdrawals] = useState(false);
 
-  // Daily signup count
+  // Daily signup count (via Supabase)
   const [dailySignups, setDailySignups] = useState(0);
   const [loadingDailyCount, setLoadingDailyCount] = useState(true);
 
   // Offerwall dropdown
   const [selectedOfferwall, setSelectedOfferwall] = useState('revtoo');
 
-  // Withdrawal form state
+  // Withdrawal form
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [paypalEmail, setPaypalEmail] = useState('');
   const [withdrawMessage, setWithdrawMessage] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
 
   // ===== EFFECTS =====
-  // Fetch daily signups
-  const fetchDailySignups = async () => {
-    setLoadingDailyCount(true);
-    try {
-      const yesterday = Timestamp.fromDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
-      const q = query(collection(db, 'users'), where('createdAt', '>=', yesterday));
-      const snapshot = await getDocs(q);
-      setDailySignups(snapshot.size);
-    } catch (error) {
-      console.error('Error fetching daily signups:', error);
-      setDailySignups(0);
-    } finally {
-      setLoadingDailyCount(false);
-    }
-  };
 
+  // Auth listener
   useEffect(() => {
-    fetchDailySignups();
-  }, []);
-
-  // Listen to auth state
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
         const adminEmail = 'flynzb9957@zohomail.com';
-        const isAdminUser = currentUser.email === adminEmail;
-        setIsAdmin(isAdminUser);
+        setIsAdmin(currentUser.email === adminEmail);
 
-        // Fetch user data from Firestore
-        const userRef = doc(db, 'users', currentUser.uid);
-        const unsubUser = onSnapshot(userRef, (docSnap) => {
-          if (docSnap.exists()) {
-            setUserData({
-              balance: docSnap.data().balance || 0,
-              firstWithdrawalDone: docSnap.data().firstWithdrawalDone || false,
-            });
-          }
-        });
+        // Set up real-time subscription for user data
+        const subscription = supabase
+          .channel(`user-${currentUser.uid}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'UPDATE',
+              schema: 'public',
+              table: 'users',
+              filter: `id=eq.${currentUser.uid}`,
+            },
+            (payload) => {
+              setUserData({
+                balance: payload.new.balance || 0,
+                firstWithdrawalDone: payload.new.first_withdrawal_done || false,
+              });
+            }
+          )
+          .subscribe();
+
+        // Fetch initial user data
+        const { data, error } = await supabase
+          .from('users')
+          .select('balance, first_withdrawal_done')
+          .eq('id', currentUser.uid)
+          .single();
+
+        if (data) {
+          setUserData({
+            balance: data.balance || 0,
+            firstWithdrawalDone: data.first_withdrawal_done || false,
+          });
+        }
 
         if (currentPage === 'home' || currentPage === 'login') {
           setCurrentPage('dashboard');
         }
 
-        // Cleanup user listener on logout
-        return () => unsubUser();
+        return () => {
+          subscription.unsubscribe();
+        };
       } else {
         setIsAdmin(false);
         setUserData({ balance: 0, firstWithdrawalDone: false });
@@ -115,24 +107,43 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch pending withdrawals when admin panel loads
-  useEffect(() => {
-    if (isAdmin && currentPage === 'admin') {
-      fetchPendingWithdrawals();
-    }
-  }, [isAdmin, currentPage]);
+  // Fetch daily signups from Supabase
+  const fetchDailySignups = async () => {
+    setLoadingDailyCount(true);
+    try {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const { count, error } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', yesterday.toISOString());
 
-  // ===== FUNCTIONS =====
+      if (error) throw error;
+      setDailySignups(count || 0);
+    } catch (error) {
+      console.error('Error fetching daily signups:', error);
+      setDailySignups(0);
+    } finally {
+      setLoadingDailyCount(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDailySignups();
+  }, []);
+
+  // Admin fetch pending withdrawals
   const fetchPendingWithdrawals = async () => {
     setLoadingWithdrawals(true);
     try {
-      const q = query(collection(db, 'withdrawals'), where('status', '==', 'pending'));
-      const querySnapshot = await getDocs(q);
-      const data = [];
-      querySnapshot.forEach((doc) => {
-        data.push({ id: doc.id, ...doc.data() });
-      });
-      setPendingWithdrawals(data);
+      const { data, error } = await supabase
+        .from('withdrawals')
+        .select('*')
+        .eq('status', 'pending')
+        .order('requested_at', { ascending: false });
+
+      if (error) throw error;
+      setPendingWithdrawals(data || []);
     } catch (error) {
       console.error('Error fetching withdrawals:', error);
     } finally {
@@ -140,7 +151,15 @@ function App() {
     }
   };
 
-  // ===== SIGN UP =====
+  useEffect(() => {
+    if (isAdmin && currentPage === 'admin') {
+      fetchPendingWithdrawals();
+    }
+  }, [isAdmin, currentPage]);
+
+  // ===== HANDLERS =====
+
+  // Sign Up
   const handleSignUp = async () => {
     setMessage('');
     if (!email) { setMessage('⚠️ Please enter your email address.'); return; }
@@ -151,22 +170,32 @@ function App() {
     setIsLoading(true);
     try {
       const userCred = await createUserWithEmailAndPassword(auth, email, password);
-      await setDoc(doc(db, 'users', userCred.user.uid), {
-        email: userCred.user.email,
-        createdAt: serverTimestamp(),
-        balance: 0,
-        firstWithdrawalDone: false,
-        emailVerified: false,
-      });
+
+      // Insert into Supabase
+      const { error: supabaseError } = await supabase
+        .from('users')
+        .insert({
+          id: userCred.user.uid,
+          email: userCred.user.email,
+          email_verified: false,
+        });
+
+      if (supabaseError) {
+        console.error('Supabase insert error:', supabaseError);
+        setMessage('❌ Failed to create user in database.');
+        await signOut(auth);
+        return;
+      }
+
       await sendEmailVerification(userCred.user);
       await signOut(auth);
-      setMessage('✅ Verification email sent! Please check your inbox and click the link to verify your email. You can withdraw only after verifying.');
+      setMessage('✅ Verification email sent! Check your inbox.');
       setEmail('');
       setPassword('');
       fetchDailySignups();
     } catch (error) {
       if (error.code === 'auth/email-already-in-use') {
-        setMessage('❌ This email is already registered. Please log in instead.');
+        setMessage('❌ Email already registered. Please log in.');
       } else {
         setMessage(`❌ ${error.message}`);
       }
@@ -175,7 +204,7 @@ function App() {
     }
   };
 
-  // ===== LOGIN =====
+  // Login
   const handleLogin = async () => {
     setMessage('');
     if (!loginEmail || !loginPassword) {
@@ -185,9 +214,8 @@ function App() {
     setIsLoading(true);
     try {
       const userCred = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
-      const loggedInUser = userCred.user;
-      if (!loggedInUser.emailVerified) {
-        setMessage('❌ Please verify your email before logging in. Check your inbox.');
+      if (!userCred.user.emailVerified) {
+        setMessage('❌ Please verify your email before logging in.');
         await signOut(auth);
         return;
       }
@@ -205,7 +233,7 @@ function App() {
     }
   };
 
-  // ===== LOGOUT =====
+  // Logout
   const handleLogout = async () => {
     await signOut(auth);
     setUser(null);
@@ -213,10 +241,9 @@ function App() {
     setMessage('');
   };
 
-  // ===== WITHDRAWAL REQUEST (Updated for Vercel) =====
+  // Withdrawal
   const handleWithdraw = async () => {
     setWithdrawMessage('');
-    
     const amount = parseFloat(withdrawAmount);
     if (!amount || amount <= 0) {
       setWithdrawMessage('⚠️ Please enter a valid amount.');
@@ -240,31 +267,25 @@ function App() {
     }
 
     setWithdrawLoading(true);
-
     try {
-      // Get the Firebase ID token
-      const idToken = await auth.currentUser.getIdToken();
-
-      const response = await fetch('/api/requestWithdrawal', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({ amount, paypalEmail }),
+      const { data, error } = await supabase.rpc('request_withdrawal', {
+        p_user_id: auth.currentUser.uid,
+        p_amount: amount,
+        p_paypal_email: paypalEmail,
       });
 
-      const data = await response.json();
-
-      if (response.ok && data.success) {
-        setWithdrawMessage('✅ Withdrawal request submitted! It will be processed within 24-48 hours.');
+      if (error) {
+        console.error('RPC error:', error);
+        setWithdrawMessage(`❌ ${error.message}`);
+      } else if (!data.success) {
+        setWithdrawMessage(`❌ ${data.error}`);
+      } else {
+        setWithdrawMessage('✅ Withdrawal request submitted!');
         setWithdrawAmount('');
         setPaypalEmail('');
-      } else {
-        setWithdrawMessage(`❌ ${data.error || 'Something went wrong. Please try again.'}`);
       }
-    } catch (error) {
-      console.error('Withdrawal error:', error);
+    } catch (err) {
+      console.error('Withdrawal error:', err);
       setWithdrawMessage('❌ Network error. Please try again.');
     } finally {
       setWithdrawLoading(false);
@@ -289,11 +310,11 @@ function App() {
   };
 
   // ===== PAGE COMPONENTS =====
+
   const renderHome = () => (
     <div className="hero">
       <h1>Get paid for testing apps, games & surveys</h1>
       <p className="subtitle">Earn real cash in your free time. No experience needed.</p>
-
       <div className="signup-card">
         <div className="input-group">
           <input
@@ -330,7 +351,6 @@ function App() {
           </button>
         </div>
       </div>
-
       <div className="social-proof">
         <span className="counter">
           {loadingDailyCount ? '...' : dailySignups.toLocaleString()}+
@@ -344,7 +364,6 @@ function App() {
     <div className="hero">
       <h1 style={{ fontSize: '42px' }}>Welcome Back</h1>
       <p className="subtitle">Log in to your EZCash account</p>
-
       <div className="signup-card">
         <div className="input-group">
           <input
@@ -382,7 +401,6 @@ function App() {
     <div className="hero">
       <h1 style={{ fontSize: '38px' }}>👋 Welcome, {user?.email}</h1>
       <p className="subtitle">Complete offers below to earn cash!</p>
-
       <div className="dashboard-card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '15px 20px', background: '#0d0f23', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
           <div>
@@ -395,7 +413,6 @@ function App() {
             {user?.emailVerified ? '✅ Verified' : '⚠️ Verify your email to withdraw'}
           </div>
         </div>
-
         <div style={{ marginTop: '10px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <div style={{ color: '#a0aec0', fontWeight: '600' }}>📱 Offerwall</div>
@@ -492,14 +509,11 @@ function App() {
     <div className="hero">
       <h1 style={{ fontSize: '38px' }}>🛡️ Admin Panel</h1>
       <p className="subtitle">Manage pending withdrawal requests</p>
-
       <div className="admin-card">
         {loadingWithdrawals ? (
           <div style={{ textAlign: 'center', padding: '40px', color: '#4a4f6f' }}>Loading withdrawals...</div>
         ) : pendingWithdrawals.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '40px', color: '#4a4f6f' }}>
-            ✅ No pending withdrawals. All caught up!
-          </div>
+          <div style={{ textAlign: 'center', padding: '40px', color: '#4a4f6f' }}>✅ No pending withdrawals.</div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', minWidth: '500px' }}>
@@ -515,11 +529,11 @@ function App() {
               <tbody>
                 {pendingWithdrawals.map((w) => (
                   <tr key={w.id} style={{ borderBottom: '1px solid #1a1f3a' }}>
-                    <td style={{ padding: '10px', color: '#a0aec0', wordBreak: 'break-all' }}>{w.userId}</td>
+                    <td style={{ padding: '10px', color: '#a0aec0', wordBreak: 'break-all' }}>{w.user_id}</td>
                     <td style={{ padding: '10px', fontWeight: '600', color: '#00f5a0' }}>${w.amount}</td>
-                    <td style={{ padding: '10px' }}>{w.paypalEmail}</td>
+                    <td style={{ padding: '10px' }}>{w.paypal_email}</td>
                     <td style={{ padding: '10px', color: '#4a4f6f' }}>
-                      {w.requestedAt ? new Date(w.requestedAt.seconds * 1000).toLocaleString() : 'N/A'}
+                      {new Date(w.requested_at).toLocaleString()}
                     </td>
                     <td style={{ padding: '10px' }}>
                       <button
@@ -559,6 +573,10 @@ function App() {
     );
   }
 
+  // CSS is the same as before – keep it or import from a file.
+  // For brevity, I'm including inline styles; you can move them to App.css.
+  const styles = { /* ... your existing CSS ... */ };
+
   return (
     <>
       <style>{`
@@ -570,13 +588,7 @@ function App() {
           min-height: 100vh;
           display: block;
         }
-        .app {
-          width: 100%;
-          max-width: 1200px;
-          padding: 20px 30px;
-          margin: 0 auto;
-          min-height: 100vh;
-        }
+        .app { width: 100%; max-width: 1200px; padding: 20px 30px; margin: 0 auto; min-height: 100vh; }
         .navbar {
           display: flex;
           justify-content: space-between;
@@ -771,7 +783,6 @@ function App() {
           </div>
         </nav>
 
-        {/* ===== PAGE RENDERER ===== */}
         {!user && currentPage === 'login' && renderLogin()}
         {!user && currentPage === 'home' && renderHome()}
         {user && currentPage === 'dashboard' && renderDashboard()}

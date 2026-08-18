@@ -1,5 +1,23 @@
 const crypto = require('crypto');
+const Busboy = require('busboy');
 const { supabase } = require('../lib/supabaseClient.js');
+
+// Helper to parse multipart form data
+function parseMultipart(req) {
+  return new Promise((resolve, reject) => {
+    const busboy = Busboy({ headers: req.headers });
+    const fields = {};
+    busboy.on('field', (fieldname, val) => {
+      fields[fieldname] = val;
+    });
+    busboy.on('file', (fieldname, file, info) => {
+      file.resume(); // skip files
+    });
+    busboy.on('finish', () => resolve(fields));
+    busboy.on('error', reject);
+    req.pipe(busboy);
+  });
+}
 
 module.exports = async function handler(req, res) {
   console.log('📨 Webhook received:', {
@@ -15,16 +33,12 @@ module.exports = async function handler(req, res) {
   const offermaruSecret = process.env.OFFERMARU_S2S_SECRET;
   const revtooSecret = process.env.OFFERWALL_SECRET;
 
-  // Check both header AND query parameter
-  const apiKeyHeader = req.headers['x-api-key'];
   const querySecret = req.query.secret;
-  
+  const headerSecret = req.headers['x-secret'];
+  const apiKeyHeader = req.headers['x-api-key'];
+
+  const isValidOffermaru = (querySecret === offermaruSecret) || (headerSecret === offermaruSecret);
   const isValidRevtoo = (apiKeyHeader === revtooSecret) || (querySecret === revtooSecret);
-  
-  if (!isValidRevtoo) {
-    console.error('❌ Invalid Revtoo secret');
-    return res.status(403).send('Invalid secret');
-  }
 
   // ============================================================
   // 2. PARSE
@@ -50,7 +64,17 @@ module.exports = async function handler(req, res) {
       return res.status(403).send('Invalid secret');
     }
 
-    const data = req.body;
+    // Parse multipart form data if needed
+    let data = req.body;
+    if (req.headers['content-type']?.includes('multipart/form-data')) {
+      try {
+        data = await parseMultipart(req);
+      } catch (err) {
+        console.error('❌ Failed to parse multipart:', err);
+        return res.status(400).send('Bad request');
+      }
+    }
+
     const subId = data.subId;
     const rewardRaw = parseFloat(data.reward) || 0;
     const transId = data.transId || `revtoo_${Date.now()}`;
@@ -112,7 +136,6 @@ module.exports = async function handler(req, res) {
 
     if (error) {
       console.error('❌ Supabase error:', error);
-      // If duplicate, still return OK (offerwall expects 200)
       if (error.message.includes('Duplicate transaction')) {
         console.log('⏭️ Duplicate transaction, ignoring');
         return res.status(200).send('OK');

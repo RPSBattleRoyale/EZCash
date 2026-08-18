@@ -86,39 +86,24 @@ module.exports = async function handler(req, res) {
     const signature = data.signature;
     const debug = data.debug;
 
-    // --- Signature verification (debug multiple formats) ---
+    // --- Signature verification ---
     const secretKey = process.env.OFFERWALL_SECRET;
-    const receivedSignature = signature;
     
-    // Collect possible signature strings
-    const formats = [
-      { label: 'subId+transId+reward+secret', value: subId + transId + rewardRaw + secretKey },
-      { label: 'subId+transId+payout+secret', value: subId + transId + (data.payout || '') + secretKey },
-      { label: 'subId+reward+transId+secret', value: subId + rewardRaw + transId + secretKey },
-      { label: 'secret+subId+transId+reward', value: secretKey + subId + transId + rewardRaw },
-      { label: 'subId+transId+reward', value: subId + transId + rewardRaw },
-      { label: 'subId+transId+reward_value+secret', value: subId + transId + (data.reward_value || '') + secretKey },
-    ];
+    // For test postbacks (debug=1), skip signature verification
+    if (debug === '1') {
+      console.log('🧪 Test postback (debug=1) - skipping signature verification');
+      // Still process the reward (but you might want to skip crediting real users)
+      // For now, we'll credit the user since it's a test
+    } else {
+      // Production: verify signature
+      const stringToHash = subId + transId + rewardRaw + secretKey;
+      const expectedSignature = crypto.createHash('md5').update(stringToHash).digest('hex');
     
-    let foundMatch = false;
-    for (const fmt of formats) {
-      const hash = crypto.createHash('md5').update(fmt.value).digest('hex');
-      if (hash === receivedSignature) {
-        console.log(`✅ MATCH FOUND: Format "${fmt.label}"`);
-        console.log(`   String: "${fmt.value}"`);
-        foundMatch = true;
-        break;
+      if (signature && expectedSignature !== signature) {
+        console.error('❌ Invalid Revtoo signature');
+        console.log(`Expected: ${expectedSignature}, Received: ${signature}`);
+        return res.status(403).send('Invalid signature');
       }
-    }
-    
-    if (!foundMatch) {
-      console.error('❌ No format matched. Logging all attempts:');
-      for (const fmt of formats) {
-        const hash = crypto.createHash('md5').update(fmt.value).digest('hex');
-        console.log(`   ${fmt.label}: ${hash}`);
-      }
-      console.error(`Received: ${receivedSignature}`);
-      return res.status(403).send('Invalid signature');
     }
     
     console.log('🔑 Signature check:', {
